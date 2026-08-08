@@ -63,7 +63,8 @@ function parseSessionData(raw: string): SessionData | null {
     const credentialType =
       obj.credentialType === "session" ||
       obj.credentialType === "admin-token" ||
-      obj.credentialType === "user-api-key"
+      obj.credentialType === "user-api-key" ||
+      obj.credentialType === "oidc"
         ? obj.credentialType
         : obj.userId === -1
           ? "admin-token"
@@ -77,6 +78,9 @@ function parseSessionData(raw: string): SessionData | null {
       credentialType,
       userId: obj.userId as number,
       userRole: obj.userRole,
+      oidcIssuer: typeof obj.oidcIssuer === "string" ? obj.oidcIssuer : undefined,
+      oidcSubject: typeof obj.oidcSubject === "string" ? obj.oidcSubject : undefined,
+      oidcDisplayName: typeof obj.oidcDisplayName === "string" ? obj.oidcDisplayName : undefined,
       createdAt: obj.createdAt,
       expiresAt: obj.expiresAt,
     };
@@ -138,6 +142,9 @@ export class RedisSessionStore implements SessionStore {
       credentialType: data.credentialType,
       userId: data.userId,
       userRole: data.userRole,
+      oidcIssuer: data.oidcIssuer,
+      oidcSubject: data.oidcSubject,
+      oidcDisplayName: data.oidcDisplayName,
       createdAt,
       expiresAt: createdAt + ttl * 1000,
     };
@@ -229,6 +236,9 @@ export class RedisSessionStore implements SessionStore {
           credentialType: oldSession.credentialType,
           userId: oldSession.userId,
           userRole: oldSession.userRole,
+          oidcIssuer: oldSession.oidcIssuer,
+          oidcSubject: oldSession.oidcSubject,
+          oidcDisplayName: oldSession.oidcDisplayName,
         },
         ttlSeconds
       );

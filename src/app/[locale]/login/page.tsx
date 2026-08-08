@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { AlertTriangle, Book, ExternalLink, Eye, EyeOff, Key, Loader2 } from "lucide-react";
+import { AlertTriangle, Book, ExternalLink, Eye, EyeOff, Key, Loader2, LogIn } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Suspense, useEffect, useRef, useState } from "react";
@@ -101,6 +101,31 @@ function LoginPageContent() {
   const [showPassword, setShowPassword] = useState(false);
   const [versionInfo, setVersionInfo] = useState<LoginVersionInfo | null>(null);
   const [siteTitle, setSiteTitle] = useState(DEFAULT_SITE_TITLE);
+  const [oidcEnabled, setOidcEnabled] = useState(false);
+
+  useEffect(() => {
+    const oidcError = searchParams.get("oidc_error");
+    if (oidcError === "group_denied") {
+      setError(t("errors.oidcGroupDenied"));
+      setStatus("error");
+    } else if (oidcError) {
+      setError(t("errors.oidcAuthenticationFailed"));
+      setStatus("error");
+    }
+  }, [searchParams, t]);
+
+  useEffect(() => {
+    let active = true;
+    void fetch("/api/auth/oidc/status")
+      .then((response) => response.json() as Promise<{ enabled?: unknown }>)
+      .then((data) => {
+        if (active) setOidcEnabled(data.enabled === true);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (status === "error" && apiKeyInputRef.current) {
@@ -325,6 +350,23 @@ function LoginPageContent() {
                         </div>
                       </AlertDescription>
                     </Alert>
+                  ) : null}
+                  {oidcEnabled ? (
+                    <div className="mb-6 space-y-4">
+                      <Button asChild className="w-full">
+                        <a
+                          href={`/api/auth/oidc/login?from=${encodeURIComponent(from || "/dashboard")}`}
+                        >
+                          <LogIn className="mr-2 h-4 w-4" />
+                          {t("actions.loginWithAuthelia")}
+                        </a>
+                      </Button>
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                        <div className="h-px flex-1 bg-border" />
+                        <span>{t("form.breakGlassDivider")}</span>
+                        <div className="h-px flex-1 bg-border" />
+                      </div>
+                    </div>
                   ) : null}
                   <form onSubmit={handleSubmit} className="space-y-6">
                     <motion.div

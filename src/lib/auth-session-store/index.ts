@@ -1,9 +1,12 @@
 export interface SessionData {
   sessionId: string;
   keyFingerprint: string;
-  credentialType: "session" | "admin-token" | "user-api-key";
+  credentialType: "session" | "admin-token" | "user-api-key" | "oidc";
   userId: number;
   userRole: string;
+  oidcIssuer?: string;
+  oidcSubject?: string;
+  oidcDisplayName?: string;
   createdAt: number;
   expiresAt: number;
 }

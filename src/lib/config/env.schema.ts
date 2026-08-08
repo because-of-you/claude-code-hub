@@ -108,6 +108,24 @@ export const EnvSchema = z.object({
     },
     z.string().min(1, "管理员令牌不能为空")
   ),
+  OIDC_ENABLED: z.string().default("false").transform(booleanTransform),
+  OIDC_ISSUER_URL: optionalPreprocessed(
+    (val) => (typeof val === "string" && val.trim() ? val.trim() : undefined),
+    z.string().url("OIDC_ISSUER_URL must be a valid URL")
+  ),
+  OIDC_CLIENT_ID: optionalPreprocessed(
+    (val) => (typeof val === "string" && val.trim() ? val.trim() : undefined),
+    z.string().min(1, "OIDC_CLIENT_ID cannot be empty")
+  ),
+  OIDC_CLIENT_SECRET: optionalPreprocessed(
+    (val) => (typeof val === "string" && val.trim() ? val.trim() : undefined),
+    z.string().min(1, "OIDC_CLIENT_SECRET cannot be empty")
+  ),
+  OIDC_REDIRECT_URI: optionalPreprocessed(
+    (val) => (typeof val === "string" && val.trim() ? val.trim() : undefined),
+    z.string().url("OIDC_REDIRECT_URI must be a valid URL")
+  ),
+  OIDC_REQUIRED_GROUP: z.string().trim().min(1).default("lldap_admin"),
   CSRF_SECRET: optionalPreprocessed(
     (val) => {
       // 独立于 ADMIN_TOKEN 的管理 API CSRF 签名密钥，空值与占位符视为未配置

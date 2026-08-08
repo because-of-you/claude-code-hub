@@ -72,11 +72,14 @@ export function getAuthSessionTtlSeconds(): number {
 export interface OpaqueSessionContract {
   sessionId: string; // random opaque token
   keyFingerprint: string; // hash of the API key (for audit, not auth)
-  credentialType?: "session" | "admin-token" | "user-api-key"; // token provenance for management API policy
+  credentialType?: "session" | "admin-token" | "user-api-key" | "oidc"; // token provenance for management API policy
   createdAt: number; // unix timestamp
   expiresAt: number; // unix timestamp
   userId: number;
   userRole: string;
+  oidcIssuer?: string;
+  oidcSubject?: string;
+  oidcDisplayName?: string;
 }
 
 export interface SessionTokenMigrationFlags {
@@ -137,7 +140,8 @@ export function isOpaqueSessionContract(value: unknown): value is OpaqueSessionC
     (credentialType === undefined ||
       credentialType === "session" ||
       credentialType === "admin-token" ||
-      credentialType === "user-api-key")
+      credentialType === "user-api-key" ||
+      credentialType === "oidc")
   );
 }
 
@@ -149,7 +153,7 @@ export function detectSessionTokenKind(token: string): SessionTokenKind {
   return trimmed.startsWith(OPAQUE_SESSION_ID_PREFIX) ? "opaque" : "legacy";
 }
 
-export type AuthCredentialType = "session" | "admin-token" | "user-api-key" | "none";
+export type AuthCredentialType = "session" | "admin-token" | "user-api-key" | "oidc" | "none";
 
 export function isSessionTokenAccepted(
   token: string,
@@ -178,6 +182,65 @@ export function getScopedAuthContext(): ScopedAuthContext | null {
   return storage?.getStore() ?? null;
 }
 
+function createVirtualAdminSession(options: {
+  name: string;
+  description: string;
+  keyName: string;
+  keyValue: string;
+  keyId: number;
+}): AuthSession {
+  const now = new Date();
+  const user: User = {
+    id: -1,
+    name: options.name,
+    description: options.description,
+    role: "admin",
+    rpm: 0,
+    dailyQuota: 0,
+    providerGroup: null,
+    isEnabled: true,
+    expiresAt: null,
+    limit5hResetMode: "rolling",
+    dailyResetMode: "fixed",
+    dailyResetTime: "00:00",
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const key: Key = {
+    id: options.keyId,
+    userId: user.id,
+    name: options.keyName,
+    key: options.keyValue,
+    isEnabled: true,
+    canLoginWebUi: true,
+    providerGroup: null,
+    limit5hUsd: null,
+    limit5hResetMode: "rolling",
+    limitDailyUsd: null,
+    dailyResetMode: "fixed",
+    dailyResetTime: "00:00",
+    limitWeeklyUsd: null,
+    limitMonthlyUsd: null,
+    limitConcurrentSessions: 0,
+    cacheTtlPreference: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  return { user, key };
+}
+
+export function createOidcAdminSession(displayName: string): AuthSession {
+  return createVirtualAdminSession({
+    name: displayName,
+    description: "Authelia OIDC administrator session",
+    keyName: "Authelia OIDC",
+    keyValue: "",
+    keyId: -2,
+  });
+}
+
 export async function validateKey(
   keyString: string,
   options?: {
@@ -191,46 +254,13 @@ export async function validateKey(
 
   const adminToken = config.auth.adminToken;
   if (adminToken && constantTimeEqual(keyString, adminToken)) {
-    const now = new Date();
-    const adminUser: User = {
-      id: -1,
+    return createVirtualAdminSession({
       name: "Admin Token",
       description: "Environment admin session",
-      role: "admin",
-      rpm: 0,
-      dailyQuota: 0,
-      providerGroup: null,
-      isEnabled: true,
-      expiresAt: null,
-      limit5hResetMode: "rolling",
-      dailyResetMode: "fixed",
-      dailyResetTime: "00:00",
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    const adminKey: Key = {
-      id: -1,
-      userId: adminUser.id,
-      name: "ADMIN_TOKEN",
-      key: keyString,
-      isEnabled: true,
-      canLoginWebUi: true, // Admin Token
-      providerGroup: null,
-      limit5hUsd: null,
-      limit5hResetMode: "rolling",
-      limitDailyUsd: null,
-      dailyResetMode: "fixed",
-      dailyResetTime: "00:00",
-      limitWeeklyUsd: null,
-      limitMonthlyUsd: null,
-      limitConcurrentSessions: 0,
-      cacheTtlPreference: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    return { user: adminUser, key: adminKey };
+      keyName: "ADMIN_TOKEN",
+      keyValue: keyString,
+      keyId: -1,
+    });
   }
 
   // 默认鉴权链路：Vacuum Filter（仅负向短路） → Redis（key/user 缓存） → DB（权威校验）
@@ -433,6 +463,31 @@ async function convertToAuthSession(
   options?: { allowReadOnlyAccess?: boolean }
 ): Promise<AuthSession | null> {
   const expectedFingerprint = normalizeKeyFingerprint(sessionData.keyFingerprint);
+
+  if (sessionData.credentialType === "oidc") {
+    const env = getEnvConfig();
+    if (
+      !env.OIDC_ENABLED ||
+      !env.OIDC_ISSUER_URL ||
+      !sessionData.oidcIssuer ||
+      !sessionData.oidcSubject ||
+      sessionData.userId !== -1 ||
+      sessionData.userRole !== "admin"
+    ) {
+      return null;
+    }
+
+    const configuredIssuer = env.OIDC_ISSUER_URL.replace(/\/$/, "");
+    const sessionIssuer = sessionData.oidcIssuer.replace(/\/$/, "");
+    if (!constantTimeEqual(configuredIssuer, sessionIssuer)) return null;
+
+    const identityFingerprint = await toKeyFingerprint(
+      `${sessionIssuer}\0${sessionData.oidcSubject}`
+    );
+    if (!constantTimeEqual(identityFingerprint, expectedFingerprint)) return null;
+
+    return createOidcAdminSession(sessionData.oidcDisplayName || sessionData.oidcSubject);
+  }
 
   // Admin token uses virtual user (id=-1) which has no DB keys;
   // verify fingerprint against the configured admin token directly.

@@ -133,6 +133,27 @@ describe("RedisSessionStore", () => {
     expect(found).toEqual(session);
   });
 
+  it("read() preserves OIDC identity metadata", async () => {
+    const { RedisSessionStore } = await import("@/lib/auth-session-store/redis-session-store");
+
+    const session = {
+      sessionId: "oidc-admin-session",
+      keyFingerprint: "fp-oidc",
+      credentialType: "oidc",
+      userId: -1,
+      userRole: "admin",
+      oidcIssuer: "https://auth.example.com",
+      oidcSubject: "subject-1",
+      oidcDisplayName: "wfy",
+      createdAt: 1_700_000_000_000,
+      expiresAt: 1_700_000_360_000,
+    };
+    redis.store.set(`cch:session:${session.sessionId}`, JSON.stringify(session));
+
+    const store = new RedisSessionStore();
+    await expect(store.read(session.sessionId)).resolves.toEqual(session);
+  });
+
   it("read() classifies legacy admin opaque sessions without credentialType as admin-token", async () => {
     const { RedisSessionStore } = await import("@/lib/auth-session-store/redis-session-store");
 
