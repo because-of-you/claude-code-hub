@@ -13,6 +13,7 @@ permissions:
 jobs:
   dev-build-deploy:
     runs-on: ubuntu-latest
+    environment: dev
     timeout-minutes: 90
     # 跳过由GitHub Actions创建的提交，避免死循环
     if: github.event.pusher.name != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip ci]')
@@ -106,9 +107,16 @@ jobs:
 
       - name: Prepare image names
         id: image_names
+        env:
+          ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
+          ALIYUN_ACR_NAMESPACE: ${{ vars.ALIYUN_ACR_NAMESPACE }}
         run: |
           GHCR_IMAGE=$(echo "ghcr.io/${{ github.repository_owner }}/claude-code-hub" | tr '[:upper:]' '[:lower:]')
+          ACR_IMAGE=$(echo "${ALIYUN_ACR_REGISTRY}/${ALIYUN_ACR_NAMESPACE}/claude-code-hub" | tr '[:upper:]' '[:lower:]')
+          test -n "$ALIYUN_ACR_REGISTRY"
+          test -n "$ALIYUN_ACR_NAMESPACE"
           echo "ghcr_image=${GHCR_IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "acr_image=${ACR_IMAGE}" >> "$GITHUB_OUTPUT"
 
       # Docker构建步骤
       - name: Set up QEMU
@@ -124,6 +132,13 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Log in to Aliyun Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ vars.ALIYUN_ACR_REGISTRY }}
+          username: ${{ vars.ALIYUN_ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
@@ -136,12 +151,14 @@ jobs:
           tags: |
             ${{ steps.image_names.outputs.ghcr_image }}:${{ steps.branch_info.outputs.versioned_tag }}
             ${{ steps.image_names.outputs.ghcr_image }}:${{ steps.branch_info.outputs.base_tag }}
+            ${{ steps.image_names.outputs.acr_image }}:${{ steps.branch_info.outputs.versioned_tag }}
+            ${{ steps.image_names.outputs.acr_image }}:${{ steps.branch_info.outputs.base_tag }}
           labels: |
             org.opencontainers.image.version=${{ steps.branch_info.outputs.versioned_tag }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=min
 
       - name: Build summary
         run: |
@@ -151,7 +168,11 @@ jobs:
           echo "📦 Docker Images:"
           echo "  - ${{ steps.image_names.outputs.ghcr_image }}:${{ steps.branch_info.outputs.versioned_tag }}"
           echo "  - ${{ steps.image_names.outputs.ghcr_image }}:${{ steps.branch_info.outputs.base_tag }}"
+          echo "  - ${{ steps.image_names.outputs.acr_image }}:${{ steps.branch_info.outputs.versioned_tag }}"
+          echo "  - ${{ steps.image_names.outputs.acr_image }}:${{ steps.branch_info.outputs.base_tag }}"
           echo ""
           echo "🚀 Usage:"
           echo "  docker pull ${{ steps.image_names.outputs.ghcr_image }}:${{ steps.branch_info.outputs.base_tag }}"
           echo "  docker pull ${{ steps.image_names.outputs.ghcr_image }}:${{ steps.branch_info.outputs.versioned_tag }}"
+          echo "  docker pull ${{ steps.image_names.outputs.acr_image }}:${{ steps.branch_info.outputs.base_tag }}"
+          echo "  docker pull ${{ steps.image_names.outputs.acr_image }}:${{ steps.branch_info.outputs.versioned_tag }}"
