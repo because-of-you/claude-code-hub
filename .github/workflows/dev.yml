@@ -108,8 +108,8 @@ jobs:
       - name: Prepare image names
         id: image_names
         env:
-          ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY }}
-          ALIYUN_ACR_NAMESPACE: ${{ vars.ALIYUN_ACR_NAMESPACE }}
+          ALIYUN_ACR_REGISTRY: ${{ vars.ALIYUN_ACR_REGISTRY || secrets.ALIYUN_ACR_REGISTRY }}
+          ALIYUN_ACR_NAMESPACE: ${{ vars.ALIYUN_ACR_NAMESPACE || secrets.ALIYUN_ACR_NAMESPACE }}
         run: |
           GHCR_IMAGE=$(echo "ghcr.io/${{ github.repository_owner }}/claude-code-hub" | tr '[:upper:]' '[:lower:]')
           ACR_IMAGE=$(echo "${ALIYUN_ACR_REGISTRY}/${ALIYUN_ACR_NAMESPACE}/claude-code-hub" | tr '[:upper:]' '[:lower:]')
@@ -135,8 +135,8 @@ jobs:
       - name: Log in to Aliyun Container Registry
         uses: docker/login-action@v4
         with:
-          registry: ${{ vars.ALIYUN_ACR_REGISTRY }}
-          username: ${{ vars.ALIYUN_ACR_USERNAME }}
+          registry: ${{ vars.ALIYUN_ACR_REGISTRY || secrets.ALIYUN_ACR_REGISTRY }}
+          username: ${{ vars.ALIYUN_ACR_USERNAME || secrets.ALIYUN_ACR_USERNAME }}
           password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
 
       - name: Build and push Docker image
