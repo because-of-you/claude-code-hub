@@ -11,6 +11,13 @@ export interface OidcConfig {
   requiredGroup: string;
 }
 
+export function createOidcApplicationUrl(
+  path: string,
+  options: { redirectUri?: string; requestUrl: string }
+): URL {
+  return new URL(path, options.redirectUri || options.requestUrl);
+}
+
 interface OidcDiscovery {
   issuer: string;
   authorization_endpoint: string;

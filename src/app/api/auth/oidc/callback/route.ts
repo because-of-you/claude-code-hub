@@ -4,6 +4,7 @@ import { getAuthSessionTtlSeconds, setAuthCookie, toKeyFingerprint } from "@/lib
 import { RedisSessionStore } from "@/lib/auth-session-store/redis-session-store";
 import { logger } from "@/lib/logger";
 import {
+  createOidcApplicationUrl,
   exchangeOidcCode,
   getOidcConfig,
   isSafeInternalRedirect,
@@ -25,7 +26,10 @@ const TRANSIENT_COOKIES = [
 ];
 
 function loginErrorRedirect(request: NextRequest, code: string): NextResponse {
-  const url = new URL("/login", request.url);
+  const url = createOidcApplicationUrl("/login", {
+    redirectUri: getOidcConfig()?.redirectUri,
+    requestUrl: request.url,
+  });
   url.searchParams.set("oidc_error", code);
   return NextResponse.redirect(url);
 }
@@ -99,7 +103,12 @@ export async function GET(request: NextRequest) {
     });
 
     const redirectPath = isSafeInternalRedirect(returnTo) ? returnTo : "/dashboard";
-    return NextResponse.redirect(new URL(redirectPath, request.url));
+    return NextResponse.redirect(
+      createOidcApplicationUrl(redirectPath, {
+        redirectUri: config.redirectUri,
+        requestUrl: request.url,
+      })
+    );
   } catch (error) {
     logger.error("OIDC callback failed", {
       error: error instanceof Error ? error.message : String(error),
