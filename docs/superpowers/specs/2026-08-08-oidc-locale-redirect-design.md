@@ -22,6 +22,16 @@ in its default dashboard return path. The test must fail against the current bra
 production change and pass afterward. Existing OIDC and login tests will then be run for regression
 coverage.
 
+## Image Publication
+
+No Dockerfile or image workflow change is required. After the fix is pushed to the non-main
+`codex/authelia-oidc` branch, the existing `dev.yml` workflow builds and publishes both the moving
+`codex-authelia-oidc` GHCR tag and an immutable `codex-authelia-oidc-<short-sha>` tag.
+
+Aliyun ACR publication is intentionally not configured in this source repository. The deployment
+repository remains responsible for mirroring the published GHCR image into ACR. Completion must
+include checking the source repository image workflow after the implementation push.
+
 ## Scope
 
 This change only corrects locale propagation into the OIDC return path. It does not alter OIDC
