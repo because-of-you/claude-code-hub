@@ -144,4 +144,64 @@ describe("LoginPage UI Redesign", () => {
     expect(input.className).toContain("pl-9");
     expect(input.className).toContain("pr-10");
   });
+
+  it("shows OIDC first and keeps password login collapsed while status is loading", async () => {
+    global.fetch = vi.fn(() => new Promise(() => {})) as typeof fetch;
+
+    await render();
+
+    expect(container.querySelector('a[href^="/api/auth/oidc/login?"]')).not.toBeNull();
+    expect(container.querySelector("input#apiKey")).toBeNull();
+    const disclosure = container.querySelector(
+      'button[aria-controls="password-login-form"]'
+    ) as HTMLButtonElement;
+    expect(disclosure).not.toBeNull();
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("reveals password login in place when the disclosure is activated", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input) === "/api/auth/oidc/status" ? { enabled: true } : {}),
+    })) as typeof fetch;
+
+    await render();
+    const disclosure = container.querySelector(
+      'button[aria-controls="password-login-form"]'
+    ) as HTMLButtonElement;
+
+    await act(async () => disclosure.click());
+
+    expect(disclosure.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector("#password-login-form input#apiKey")).not.toBeNull();
+  });
+
+  it("shows password login directly when OIDC status lookup fails", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/auth/oidc/status") throw new Error("status unavailable");
+      return { ok: true, json: async () => ({}) } as Response;
+    }) as typeof fetch;
+
+    await render();
+    await act(async () => Promise.resolve());
+
+    expect(container.querySelector('a[href^="/api/auth/oidc/login?"]')).toBeNull();
+    expect(container.querySelector("input#apiKey")).not.toBeNull();
+  });
+
+  it("localizes the OIDC return path with the active locale", async () => {
+    mockUseLocale.mockReturnValue("zh-CN");
+    mockUseSearchParams.mockReturnValue({
+      get: vi.fn((key: string) => (key === "from" ? "/dashboard" : null)),
+    });
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => (String(input) === "/api/auth/oidc/status" ? { enabled: true } : {}),
+    })) as typeof fetch;
+
+    await render();
+
+    const oidcLink = container.querySelector('a[href^="/api/auth/oidc/login?"]');
+    expect(oidcLink?.getAttribute("href")).toBe("/api/auth/oidc/login?from=%2Fzh-CN%2Fdashboard");
+  });
 });

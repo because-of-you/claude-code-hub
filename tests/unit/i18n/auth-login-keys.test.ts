@@ -64,4 +64,22 @@ describe("auth.json locale key parity", () => {
       expect(localeKeys, `${locale} key mismatch`).toEqual(baselineKeys);
     }
   });
+
+  it("brands the primary login action as acitrus.cn in every locale", () => {
+    const expected = {
+      en: "Continue with acitrus.cn",
+      "zh-CN": "使用 acitrus.cn 登录",
+      "zh-TW": "使用 acitrus.cn 登入",
+      ja: "acitrus.cn でログイン",
+      ru: "Войти через acitrus.cn",
+    };
+
+    for (const [locale, data] of Object.entries(locales)) {
+      const actions = data.actions as Record<string, string>;
+      expect(actions.loginWithAcitrus).toBe(expected[locale as keyof typeof expected]);
+      expect(actions).not.toHaveProperty("loginWithAuthelia");
+      expect(actions.showPasswordLogin).toBeTruthy();
+      expect(actions.hidePasswordLogin).toBeTruthy();
+    }
+  });
 });

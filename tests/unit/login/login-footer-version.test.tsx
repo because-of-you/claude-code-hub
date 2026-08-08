@@ -72,7 +72,7 @@ describe("LoginPage Footer Version", () => {
 
     await render();
 
-    expect((global.fetch as any).mock.calls[0]?.[0]).toBe("/api/version");
+    expect(global.fetch).toHaveBeenCalledWith("/api/version");
     const footer = container.querySelector('[data-testid="login-footer-version"]');
     expect(footer?.textContent).toContain("v0.5.0");
     expect(footer?.textContent).toContain("t:version.updateAvailable");

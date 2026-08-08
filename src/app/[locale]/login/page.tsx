@@ -1,9 +1,19 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { AlertTriangle, Book, ExternalLink, Eye, EyeOff, Key, Loader2, LogIn } from "lucide-react";
+import {
+  AlertTriangle,
+  Book,
+  ChevronDown,
+  ExternalLink,
+  Eye,
+  EyeOff,
+  Key,
+  Loader2,
+  LogIn,
+} from "lucide-react";
 import { useSearchParams } from "next/navigation";
-import { useTranslations } from "next-intl";
+import { useLocale, useTranslations } from "next-intl";
 import { Suspense, useEffect, useRef, useState } from "react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -14,7 +24,7 @@ import { LanguageSwitcher } from "@/components/ui/language-switcher";
 import { ThemeSwitcher } from "@/components/ui/theme-switcher";
 import { Link, useRouter } from "@/i18n/routing";
 import { DEFAULT_SITE_TITLE } from "@/lib/site-title";
-import { resolveLoginRedirectTarget } from "./redirect-safety";
+import { resolveLoginRedirectTarget, resolveOidcRedirectTarget } from "./redirect-safety";
 
 export default function LoginPage() {
   return (
@@ -26,6 +36,7 @@ export default function LoginPage() {
 
 type LoginStatus = "idle" | "submitting" | "success" | "error";
 type LoginType = "admin" | "dashboard_user" | "readonly_user";
+type OidcPresentationState = "loading" | "enabled" | "disabled";
 
 interface LoginVersionInfo {
   current: string;
@@ -89,9 +100,11 @@ const stagger = {
 function LoginPageContent() {
   const t = useTranslations("auth");
   const tCustoms = useTranslations("customs");
+  const locale = useLocale();
   const router = useRouter();
   const searchParams = useSearchParams();
   const from = searchParams.get("from") || "";
+  const oidcReturnPath = resolveOidcRedirectTarget(locale, from);
 
   const apiKeyInputRef = useRef<HTMLInputElement>(null);
   const [apiKey, setApiKey] = useState("");
@@ -101,7 +114,10 @@ function LoginPageContent() {
   const [showPassword, setShowPassword] = useState(false);
   const [versionInfo, setVersionInfo] = useState<LoginVersionInfo | null>(null);
   const [siteTitle, setSiteTitle] = useState(DEFAULT_SITE_TITLE);
-  const [oidcEnabled, setOidcEnabled] = useState(false);
+  const [oidcState, setOidcState] = useState<OidcPresentationState>("loading");
+  const [passwordLoginExpanded, setPasswordLoginExpanded] = useState(false);
+  const showOidcLogin = oidcState !== "disabled";
+  const showPasswordLogin = oidcState === "disabled" || passwordLoginExpanded;
 
   useEffect(() => {
     const oidcError = searchParams.get("oidc_error");
@@ -119,9 +135,11 @@ function LoginPageContent() {
     void fetch("/api/auth/oidc/status")
       .then((response) => response.json() as Promise<{ enabled?: unknown }>)
       .then((data) => {
-        if (active) setOidcEnabled(data.enabled === true);
+        if (active) setOidcState(data.enabled === true ? "enabled" : "disabled");
       })
-      .catch(() => {});
+      .catch(() => {
+        if (active) setOidcState("disabled");
+      });
     return () => {
       active = false;
     };
@@ -351,96 +369,106 @@ function LoginPageContent() {
                       </AlertDescription>
                     </Alert>
                   ) : null}
-                  {oidcEnabled ? (
-                    <div className="mb-6 space-y-4">
+                  {showOidcLogin ? (
+                    <div className="mb-6 space-y-3">
                       <Button asChild className="w-full">
-                        <a
-                          href={`/api/auth/oidc/login?from=${encodeURIComponent(from || "/dashboard")}`}
-                        >
+                        <a href={`/api/auth/oidc/login?from=${encodeURIComponent(oidcReturnPath)}`}>
                           <LogIn className="mr-2 h-4 w-4" />
-                          {t("actions.loginWithAuthelia")}
+                          {t("actions.loginWithAcitrus")}
                         </a>
                       </Button>
-                      <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                        <div className="h-px flex-1 bg-border" />
-                        <span>{t("form.breakGlassDivider")}</span>
-                        <div className="h-px flex-1 bg-border" />
-                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="w-full text-muted-foreground"
+                        aria-expanded={passwordLoginExpanded}
+                        aria-controls="password-login-form"
+                        onClick={() => setPasswordLoginExpanded((expanded) => !expanded)}
+                      >
+                        {passwordLoginExpanded
+                          ? t("actions.hidePasswordLogin")
+                          : t("actions.showPasswordLogin")}
+                        <ChevronDown
+                          className={`ml-2 h-4 w-4 transition-transform ${passwordLoginExpanded ? "rotate-180" : ""}`}
+                        />
+                      </Button>
                     </div>
                   ) : null}
-                  <form onSubmit={handleSubmit} className="space-y-6">
-                    <motion.div
-                      custom={0.15}
-                      variants={stagger}
-                      initial="hidden"
-                      animate="visible"
-                      className="space-y-3"
-                    >
-                      <div className="space-y-2">
-                        <Label htmlFor="apiKey">{t("form.apiKeyLabel")}</Label>
-                        <div className="relative">
-                          <Key className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                          <Input
-                            id="apiKey"
-                            ref={apiKeyInputRef}
-                            type={showPassword ? "text" : "password"}
-                            value={apiKey}
-                            onChange={(e) => setApiKey(e.target.value)}
-                            className="pl-9 pr-10"
-                            required
-                            disabled={isLoading}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setShowPassword((prev) => !prev)}
-                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
-                            aria-label={
-                              showPassword ? t("form.hidePassword") : t("form.showPassword")
-                            }
-                            tabIndex={-1}
-                          >
-                            {showPassword ? (
-                              <EyeOff className="h-4 w-4" />
-                            ) : (
-                              <Eye className="h-4 w-4" />
-                            )}
-                          </button>
-                        </div>
-                      </div>
-
-                      {error ? (
-                        <Alert variant="destructive">
-                          <AlertDescription>{error}</AlertDescription>
-                        </Alert>
-                      ) : null}
-                    </motion.div>
-
-                    <motion.div
-                      custom={0.2}
-                      variants={stagger}
-                      initial="hidden"
-                      animate="visible"
-                      className="space-y-2 flex flex-col items-center"
-                    >
-                      <Button
-                        type="submit"
-                        className="w-full max-w-full"
-                        disabled={isLoading || !apiKey.trim()}
+                  {showPasswordLogin ? (
+                    <form id="password-login-form" onSubmit={handleSubmit} className="space-y-6">
+                      <motion.div
+                        custom={0.15}
+                        variants={stagger}
+                        initial="hidden"
+                        animate="visible"
+                        className="space-y-3"
                       >
-                        {isLoading ? (
-                          <>
-                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                            {t("login.loggingIn")}
-                          </>
-                        ) : (
-                          t("actions.enterConsole")
-                        )}
-                      </Button>
-                      <p className="text-center text-xs text-muted-foreground">
-                        {t("security.privacyNote")}
-                      </p>
-                    </motion.div>
-                  </form>
+                        <div className="space-y-2">
+                          <Label htmlFor="apiKey">{t("form.apiKeyLabel")}</Label>
+                          <div className="relative">
+                            <Key className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                            <Input
+                              id="apiKey"
+                              ref={apiKeyInputRef}
+                              type={showPassword ? "text" : "password"}
+                              value={apiKey}
+                              onChange={(e) => setApiKey(e.target.value)}
+                              className="pl-9 pr-10"
+                              required
+                              disabled={isLoading}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowPassword((prev) => !prev)}
+                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                              aria-label={
+                                showPassword ? t("form.hidePassword") : t("form.showPassword")
+                              }
+                              tabIndex={-1}
+                            >
+                              {showPassword ? (
+                                <EyeOff className="h-4 w-4" />
+                              ) : (
+                                <Eye className="h-4 w-4" />
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        {error ? (
+                          <Alert variant="destructive">
+                            <AlertDescription>{error}</AlertDescription>
+                          </Alert>
+                        ) : null}
+                      </motion.div>
+
+                      <motion.div
+                        custom={0.2}
+                        variants={stagger}
+                        initial="hidden"
+                        animate="visible"
+                        className="space-y-2 flex flex-col items-center"
+                      >
+                        <Button
+                          type="submit"
+                          className="w-full max-w-full"
+                          disabled={isLoading || !apiKey.trim()}
+                        >
+                          {isLoading ? (
+                            <>
+                              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                              {t("login.loggingIn")}
+                            </>
+                          ) : (
+                            t("actions.enterConsole")
+                          )}
+                        </Button>
+                        <p className="text-center text-xs text-muted-foreground">
+                          {t("security.privacyNote")}
+                        </p>
+                      </motion.div>
+                    </form>
+                  ) : null}
                 </CardContent>
               </Card>
             </motion.div>

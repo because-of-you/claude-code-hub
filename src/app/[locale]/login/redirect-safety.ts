@@ -37,3 +37,7 @@ export function resolveLoginRedirectTarget(redirectTo: unknown, from: string): s
 
   return sanitizeRedirectPath(from);
 }
+
+export function resolveOidcRedirectTarget(locale: string, from: string): string {
+  return `/${locale}${sanitizeRedirectPath(from)}`;
+}

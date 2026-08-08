@@ -33,6 +33,8 @@ vi.mock("@/lib/auth-session-store/redis-session-store", () => ({
 }));
 vi.mock("@/lib/logger", () => ({ logger: { error: vi.fn() } }));
 vi.mock("@/lib/oidc", () => ({
+  createOidcApplicationUrl: (path: string, options: { redirectUri?: string; requestUrl: string }) =>
+    new URL(path, options.redirectUri || options.requestUrl),
   exchangeOidcCode: exchangeOidcCodeMock,
   getOidcConfig: getOidcConfigMock,
   isSafeInternalRedirect: (value: unknown) =>
