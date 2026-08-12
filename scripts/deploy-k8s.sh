@@ -575,7 +575,7 @@ generate_random() {
         done
     else
         while [[ "${#random}" -lt "$length" ]]; do
-            if ! chunk=$(LC_ALL=C dd if=/dev/urandom bs=256 count=1 status=none | tr -dc 'A-Za-z0-9'); then
+            if ! chunk=$(LC_ALL=C dd if=/dev/urandom bs=256 count=1 status=none | LC_ALL=C tr -dc 'A-Za-z0-9'); then
                 log_error "从 /dev/urandom 生成随机串失败"
                 return 1
             fi

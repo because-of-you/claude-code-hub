@@ -95,7 +95,11 @@ describe("LoginPage Loading State", () => {
       resolveFetch = resolve;
     });
 
-    (global.fetch as any).mockReturnValue(fetchPromise);
+    (global.fetch as any).mockImplementation((input: RequestInfo | URL) =>
+      String(input) === "/api/auth/oidc/status"
+        ? Promise.resolve({ ok: true, json: async () => ({ enabled: false }) })
+        : fetchPromise
+    );
 
     await render();
 
