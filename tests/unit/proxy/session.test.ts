@@ -163,6 +163,49 @@ describe("ProxySession endpoint policy", () => {
   });
 });
 
+describe("ProxySession high-concurrency policy", () => {
+  it("只关闭调试快照与实时观测", () => {
+    const session = createSession({ redirectedModel: null });
+
+    expect(session.shouldPersistSessionDebugArtifacts()).toBe(true);
+    expect(session.shouldTrackSessionObservability()).toBe(true);
+
+    session.setHighConcurrencyModeEnabled(true);
+
+    expect(session.shouldPersistSessionDebugArtifacts()).toBe(false);
+    expect(session.shouldTrackSessionObservability()).toBe(false);
+  });
+});
+
+describe("ProxySession provider reuse identity", () => {
+  it("稳定 Session ID 在单条增量请求中也允许复用供应商", () => {
+    const session = createSession({
+      redirectedModel: null,
+      requestMessage: { input: [{ role: "user", content: "next turn" }] },
+    });
+
+    session.setSessionId("stable-client-session", { allowSingleTurnProviderReuse: true });
+
+    expect(session.shouldReuseProvider()).toBe(true);
+  });
+
+  it("内容哈希或随机降级身份仍要求多条上下文", () => {
+    const session = createSession({
+      redirectedModel: null,
+      requestMessage: { messages: [{ role: "user", content: "same short prompt" }] },
+    });
+
+    session.setSessionId("derived-session");
+    expect(session.shouldReuseProvider()).toBe(false);
+
+    session.request.message.messages = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "second" },
+    ];
+    expect(session.shouldReuseProvider()).toBe(true);
+  });
+});
+
 describe("ProxySession.getCachedPriceDataByBillingSource", () => {
   it("配置 = original 时应优先使用原始模型", async () => {
     const originalPriceData: ModelPriceData = { input_cost_per_token: 1, output_cost_per_token: 2 };

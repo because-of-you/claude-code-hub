@@ -53,9 +53,21 @@ const storeControl = vi.hoisted(() => {
         return ownedChunks.length;
       }
     ),
-    readChunks: vi.fn(async (replayId: string, fromIndex: number) => {
+    readOwnedChunks: vi.fn(
+      async (replayId: string, _ownerToken: string, fromIndex: number, maxCount: number) => {
+        order.push("read");
+        const chunks = ownedChunksByReplayId.get(replayId) ?? [];
+        return chunks.slice(fromIndex, fromIndex + maxCount);
+      }
+    ),
+    heartbeatOwned: vi.fn(async () => {
+      order.push("renew");
+      return true;
+    }),
+    readChunks: vi.fn(async (replayId: string, fromIndex: number, maxCount?: number) => {
       order.push("read");
-      return (ownedChunksByReplayId.get(replayId) ?? []).slice(fromIndex);
+      const chunks = ownedChunksByReplayId.get(replayId) ?? [];
+      return chunks.slice(fromIndex, maxCount === undefined ? undefined : fromIndex + maxCount);
     }),
     completeOwned: vi.fn(
       async (_replayId: string, _ownerToken: string, meta: { status: string }) => {
@@ -162,9 +174,10 @@ async function drainWriteChain(spool: ReplaySpool): Promise<void> {
   await (spool as unknown as { writeChain: Promise<void> }).writeChain;
 }
 
-function makeOwnerSession(): ProxySession {
+function makeOwnerSession(messageRequestId = 42): ProxySession {
   return {
     replayState: { identity, ownerToken: "owner-token", role: "owner" },
+    messageContext: { id: messageRequestId },
   } as unknown as ProxySession;
 }
 
@@ -249,6 +262,22 @@ describe("ReplaySpool：write-behind 批量冲刷", () => {
     await spool.abort("test_cleanup");
   });
 
+  it("单个超大网络 chunk 会拆成有界 Redis 元素且不切断代理对", async () => {
+    const spool = makeSpool();
+    const payload = `${"x".repeat(64 * 1024 - 1)}\u{1f600}${"y".repeat(64 * 1024 + 3)}`;
+
+    spool.observe(encoder.encode(payload));
+    await drainWriteChain(spool);
+
+    const batch = storeControl.store.writeOwned.mock.calls[0]?.[3] as string[] | undefined;
+    expect(batch).toBeDefined();
+    expect(batch?.length).toBeGreaterThan(1);
+    expect(batch?.every((part) => part.length <= 64 * 1024)).toBe(true);
+    expect(batch?.join("")).toBe(payload);
+
+    await spool.abort("test_cleanup");
+  });
+
   it("空 chunk 不触发任何调度", async () => {
     const spool = makeSpool();
     spool.observe(new Uint8Array(0));
@@ -288,7 +317,7 @@ describe("ReplaySpool：write-behind 批量冲刷", () => {
     await vi.advanceTimersByTimeAsync(15_000);
     await drainWriteChain(spool);
 
-    expect(storeControl.store.renewOwnerLease).toHaveBeenCalledWith(
+    expect(storeControl.store.heartbeatOwned).toHaveBeenCalledWith(
       identity.replayId,
       "owner-token"
     );
@@ -637,7 +666,7 @@ describe("ReplaySpool：completeAfterBilling 终态屏障", () => {
     expect(storeControl.store.persistCompleted).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(30_000);
-    expect(storeControl.store.renewOwnerLease).toHaveBeenCalledTimes(2);
+    expect(storeControl.store.heartbeatOwned).toHaveBeenCalledTimes(2);
     expect(storeControl.store.completeOwned).not.toHaveBeenCalled();
 
     resolvePersist();
@@ -667,7 +696,12 @@ describe("ReplaySpool：completeAfterBilling 终态屏障", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(storeControl.store.persistCompleted).toHaveBeenCalledTimes(1);
-    expect(storeControl.store.readChunks).toHaveBeenCalledWith(identity.replayId, 0);
+    expect(storeControl.store.readOwnedChunks).toHaveBeenCalledWith(
+      identity.replayId,
+      "owner-token",
+      0,
+      64
+    );
     expect(storeControl.store.persistCompleted).toHaveBeenCalledWith(
       expect.objectContaining({
         payload: "x".repeat(payloadBytes),
@@ -730,7 +764,7 @@ describe("ReplaySpool：completeAfterBilling 终态屏障", () => {
   it("Redis chunks 缺失时封死热层并释放 heartbeat 与并发配额", async () => {
     const spool = makeSpool();
     spool.observe(encoder.encode("data: partial\n\n"));
-    storeControl.store.readChunks.mockResolvedValueOnce(null);
+    storeControl.store.readOwnedChunks.mockResolvedValueOnce(null);
 
     await spool.completeAfterBilling(10);
 
@@ -743,7 +777,7 @@ describe("ReplaySpool：completeAfterBilling 终态屏障", () => {
     expect(getActiveReplaySpoolCount()).toBe(0);
 
     await vi.advanceTimersByTimeAsync(15_000);
-    expect(storeControl.store.renewOwnerLease).not.toHaveBeenCalled();
+    expect(storeControl.store.heartbeatOwned).not.toHaveBeenCalled();
   });
 
   it("inactive 回调异常时仍完成 spool 清理并释放并发配额", async () => {
@@ -984,6 +1018,55 @@ describe("ReplaySpool：isTerminal", () => {
   });
 });
 
+describe("ReplaySpool：terminal callback", () => {
+  it("runs exactly once after completed cleanup", async () => {
+    const onTerminal = vi.fn();
+    const spool = new ReplaySpool(
+      identity,
+      "owner-token",
+      200,
+      { "content-type": "text/event-stream" },
+      "stream",
+      { onTerminal }
+    );
+    spool.observe(encoder.encode("data: complete\n\n"));
+
+    await spool.completeAfterBilling(1);
+    await spool.completeAfterBilling(1);
+
+    expect(onTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs exactly once after aborted or disabled cleanup", async () => {
+    const abortedTerminal = vi.fn();
+    const aborted = new ReplaySpool(
+      identity,
+      "owner-token",
+      200,
+      { "content-type": "text/event-stream" },
+      "stream",
+      { onTerminal: abortedTerminal }
+    );
+    await aborted.abort("test_abort");
+    await aborted.abort("test_abort_again");
+    expect(abortedTerminal).toHaveBeenCalledTimes(1);
+
+    envControl.maxPayloadBytes = 4;
+    const disabledTerminal = vi.fn();
+    const disabled = new ReplaySpool(
+      identity,
+      "owner-token-disabled",
+      200,
+      { "content-type": "text/event-stream" },
+      "stream",
+      { onTerminal: disabledTerminal }
+    );
+    disabled.observe(encoder.encode("12345678"));
+    await drainWriteChain(disabled);
+    expect(disabledTerminal).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("createReplaySpoolIfOwner", () => {
   it("非 owner 会话返回 null（无租约可释放）", () => {
     const session = { replayState: null } as unknown as ProxySession;
@@ -1032,6 +1115,7 @@ describe("createReplaySpoolIfOwner", () => {
       "owner-token",
       expect.objectContaining({
         delivery: "buffered",
+        messageRequestId: 42,
         headers: {
           "content-type": "application/json; charset=utf-8",
           "x-provider-request-id": "req-1",

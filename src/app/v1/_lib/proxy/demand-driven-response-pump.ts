@@ -16,8 +16,11 @@ export interface DemandDrivenResponsePumpOptions {
 export interface DemandDrivenResponsePump {
   stream: ReadableStream<Uint8Array>;
   completion: Promise<DemandDrivenResponsePumpCompletion>;
+  teardown: Promise<void>;
   startDrain: (reason?: unknown) => void;
-  cancelSource: (reason?: unknown) => void;
+  finishDrain: (reason?: unknown) => void;
+  /** 返回本次取消是否赢得唯一终态。 */
+  cancelSource: (reason?: unknown) => boolean;
   errorClient: (error: Error) => void;
   getState: () => DemandDrivenResponsePumpState;
   wasClientAborted: () => boolean;
@@ -43,8 +46,12 @@ export function createDemandDrivenResponsePump(
   let readerReleased = false;
   let pendingChunkDeadlineId: ReturnType<typeof setTimeout> | null = null;
   let resolveCompletion: (completion: DemandDrivenResponsePumpCompletion) => void = () => {};
+  let resolveTeardown = () => {};
   const completion = new Promise<DemandDrivenResponsePumpCompletion>((resolve) => {
     resolveCompletion = resolve;
+  });
+  const teardown = new Promise<void>((resolve) => {
+    resolveTeardown = resolve;
   });
 
   const releaseReader = () => {
@@ -67,8 +74,8 @@ export function createDemandDrivenResponsePump(
     streamEndedNormally: boolean,
     error: Error | null,
     sourceCancelReason?: Error
-  ) => {
-    if (settled) return;
+  ): boolean => {
+    if (settled) return false;
     settled = true;
     state = "finalizing";
     pendingChunk = null;
@@ -76,7 +83,11 @@ export function createDemandDrivenResponsePump(
     let cancelPromise: Promise<void> | null = null;
     const recordSourceCancelFailure = (cancelError: unknown) => {
       const normalizedCancelError = toError(cancelError);
-      if (error && error.cause === undefined) error.cause = normalizedCancelError;
+      // 已 errored 的 Web Stream 会让随后 cancel() 以同一个 Error 拒绝。
+      // 不能把错误本身写进 cause，否则日志/JSON 序列化会遇到循环引用。
+      if (error && normalizedCancelError !== error && error.cause === undefined) {
+        error.cause = normalizedCancelError;
+      }
     };
     if (sourceCancelReason) {
       try {
@@ -91,7 +102,15 @@ export function createDemandDrivenResponsePump(
     clientController = null;
     state = "closed";
     resolveCompletion({ streamEndedNormally, clientAborted, error });
-    void cancelPromise?.then(undefined, recordSourceCancelFailure);
+    // 本地 teardown 的完成条件是 reader/source 所有权已释放，而不是第三方
+    // cancel Promise 已 settle。部分 Web/Node stream adapter 会返回永不结束的
+    // cancel Promise；让清理屏障等待它会永久保留 session、listener 和 agent lease。
+    // 拒绝仍由旁路 handler 消费，但不再阻塞本地资源回收。
+    if (cancelPromise) {
+      void cancelPromise.then(undefined, recordSourceCancelFailure);
+    }
+    resolveTeardown();
+    return true;
   };
 
   const finishWithError = (error: unknown) => {
@@ -104,7 +123,10 @@ export function createDemandDrivenResponsePump(
         // The downstream may have cancelled concurrently.
       }
     }
-    settle(false, normalized);
+    // A rejected source read bypasses the Web stream cancel algorithm. Keep
+    // source ownership explicit so adapters can release the underlying Node
+    // stream, socket, and native backing store on every terminal error.
+    settle(false, normalized, normalized);
   };
 
   const finishNormally = () => {
@@ -141,9 +163,16 @@ export function createDemandDrivenResponsePump(
   };
 
   const cancelSource = (reason?: unknown) => {
-    if (settled) return;
+    if (settled) return false;
     const normalized = reason == null ? new Error("Source cancelled") : toError(reason);
-    settle(false, normalized, normalized);
+    return settle(false, normalized, normalized);
+  };
+
+  /** Completes a detached drain after metering without reporting a source error. */
+  const finishDrain = (reason?: unknown) => {
+    if (settled || state !== "draining") return;
+    const normalized = reason == null ? new Error("Background drain complete") : toError(reason);
+    settle(false, null, normalized);
   };
 
   const armPendingChunkDeadline = () => {
@@ -264,7 +293,9 @@ export function createDemandDrivenResponsePump(
   return {
     stream,
     completion,
+    teardown,
     startDrain,
+    finishDrain,
     cancelSource,
     errorClient(error) {
       if (settled || state !== "client-active") return;

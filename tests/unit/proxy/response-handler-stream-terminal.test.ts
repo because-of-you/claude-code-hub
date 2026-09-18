@@ -1,6 +1,10 @@
 import { Context } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ProxyResponseHandler } from "@/app/v1/_lib/proxy/response-handler";
+import {
+  acquireDetachedStreamLease,
+  getDetachedStreamBudgetSnapshot,
+} from "@/app/v1/_lib/proxy/detached-stream-budget";
 import { ProxySession, type MessageContext } from "@/app/v1/_lib/proxy/session";
 import { setDeferredStreamingFinalization } from "@/app/v1/_lib/proxy/stream-finalization";
 import type { Key } from "@/types/key";
@@ -20,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   replayComplete: vi.fn(async () => {}),
   replayAbort: vi.fn(async () => {}),
   replayInactive: null as (() => void) | null,
+  replayTerminal: null as (() => void) | null,
+  replayTerminalState: false,
 }));
 
 vi.mock("@/app/v1/_lib/proxy/response-fixer", () => ({
@@ -65,14 +71,17 @@ vi.mock("@/app/v1/_lib/proxy/replay/replay-spool", () => ({
     session: ProxySession,
     _response: Response,
     _delivery: string,
-    options: { onInactive?: () => void } = {}
+    options: { onInactive?: () => void; onTerminal?: () => void } = {}
   ) => {
     if (session.replayState?.role !== "owner") return null;
     mocks.replayInactive = options.onInactive ?? null;
+    mocks.replayTerminal = options.onTerminal ?? null;
     return {
       abort: mocks.replayAbort,
       completeAfterBilling: mocks.replayComplete,
-      isTerminal: false,
+      get isTerminal() {
+        return mocks.replayTerminalState;
+      },
       observe: mocks.replayObserve,
     };
   },
@@ -202,8 +211,9 @@ function createProvider(): Provider {
 
 async function createSession(options: {
   readonly responseController?: AbortController;
+  readonly pathname?: string;
 }): Promise<{ readonly releaseAgent: ReturnType<typeof vi.fn>; readonly session: ProxySession }> {
-  const request = new Request("https://hub.test/v1/messages", {
+  const request = new Request(`https://hub.test${options.pathname ?? "/v1/messages"}`, {
     body: JSON.stringify({ messages: [], stream: true }),
     headers: { "content-type": "application/json" },
     method: "POST",
@@ -246,11 +256,38 @@ function setReplayOwner(session: ProxySession, suffix: string): void {
   };
 }
 
+function setReplayFinalization(session: ProxySession): void {
+  setDeferredStreamingFinalization(session, {
+    providerId: session.provider?.id ?? 0,
+    providerName: session.provider?.name ?? "provider",
+    providerPriority: session.provider?.priority ?? 0,
+    attemptNumber: 1,
+    totalProvidersAttempted: 1,
+    isFirstAttempt: true,
+    isFailoverSuccess: false,
+    endpointId: null,
+    endpointUrl: session.provider?.url ?? "",
+    upstreamStatusCode: 200,
+    bindingIntent: "none",
+  });
+}
+
 describe("ProxyResponseHandler.dispatch stream terminal behavior", () => {
   beforeEach(() => {
     mocks.tasks.length = 0;
     mocks.replayInactive = null;
+    mocks.replayTerminal = null;
+    mocks.replayTerminalState = false;
     vi.clearAllMocks();
+    mocks.replayAbort.mockImplementation(async () => {
+      mocks.replayTerminalState = true;
+      mocks.replayInactive?.();
+      mocks.replayTerminal?.();
+    });
+    mocks.replayComplete.mockImplementation(async () => {
+      mocks.replayTerminalState = true;
+      mocks.replayTerminal?.();
+    });
     mocks.durable.mockImplementation(async (_id, _details, options) => {
       await options?.onCommitted?.();
       return true;
@@ -274,6 +311,85 @@ describe("ProxyResponseHandler.dispatch stream terminal behavior", () => {
     );
     expect(mocks.trackerEnd).toHaveBeenCalledWith(USER.id, MESSAGE.id);
     expect(releaseAgent).toHaveBeenCalledOnce();
+  });
+
+  it("透传并计量 Responses incomplete，但不发布 Replay 成功", async () => {
+    const { session } = await createSession({});
+    session.setProvider({ ...createProvider(), providerType: "codex" });
+    session.originalFormat = "response";
+    setReplayOwner(session, "responses-incomplete");
+    setReplayFinalization(session);
+    const body = [
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+      'event: response.incomplete\ndata: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":8,"output_tokens":4}}}\n\n',
+    ].join("");
+
+    const returned = await ProxyResponseHandler.dispatch(session, sseResponse(body));
+    expect(await returned.text()).toBe(body);
+    await settleTasks();
+
+    expect(mocks.durable).toHaveBeenCalledWith(
+      MESSAGE.id,
+      expect.objectContaining({
+        statusCode: 200,
+        errorMessage: "RESPONSE_INCOMPLETE",
+        inputTokens: 8,
+        outputTokens: 4,
+      }),
+      expect.objectContaining({ onCommitted: expect.any(Function) })
+    );
+    expect(mocks.replayAbort).toHaveBeenCalledWith("response_incomplete");
+    expect(mocks.replayComplete).not.toHaveBeenCalled();
+    expect(session.getProviderChain()).toContainEqual(
+      expect.objectContaining({
+        reason: "response_incomplete",
+        statusCode: 200,
+        errorMessage: "RESPONSE_INCOMPLETE",
+      })
+    );
+  });
+
+  it("客户端在 Responses incomplete 后断开时不改写为 499", async () => {
+    const body =
+      'event: response.incomplete\ndata: {"type":"response.incomplete","response":{"status":"incomplete","usage":{"input_tokens":3,"output_tokens":2}}}\n\n';
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(body));
+      },
+    });
+    const { session } = await createSession({});
+    session.setProvider({ ...createProvider(), providerType: "codex" });
+    session.originalFormat = "response";
+    setReplayFinalization(session);
+
+    const returned = await ProxyResponseHandler.dispatch(session, sseResponse(source));
+    const reader = returned.body?.getReader();
+    expect(new TextDecoder().decode((await reader?.read())?.value)).toBe(body);
+    await reader?.cancel(new Error("client disconnected after incomplete"));
+    await settleTasks();
+
+    expect(mocks.durable).toHaveBeenCalledWith(
+      MESSAGE.id,
+      expect.objectContaining({ statusCode: 200, errorMessage: "RESPONSE_INCOMPLETE" }),
+      expect.objectContaining({ onCommitted: expect.any(Function) })
+    );
+  });
+
+  it("does not interpret an opaque raw-passthrough stream as a provider protocol", async () => {
+    const { session } = await createSession({ pathname: "/v1/responses/compact" });
+    const returned = await ProxyResponseHandler.dispatch(
+      session,
+      sseResponse("data: opaque upstream bytes\n\n")
+    );
+
+    expect(await returned.text()).toBe("data: opaque upstream bytes\n\n");
+    await settleTasks();
+
+    expect(mocks.durable).toHaveBeenCalledWith(
+      51,
+      expect.objectContaining({ statusCode: 200 }),
+      expect.objectContaining({ onCommitted: expect.any(Function) })
+    );
   });
 
   it("persists a partial client-aborted stream as 499", async () => {
@@ -302,6 +418,116 @@ describe("ProxyResponseHandler.dispatch stream terminal behavior", () => {
     expect(releaseAgent).toHaveBeenCalledOnce();
   });
 
+  it("keeps an admitted detached Replay complete and replayable", async () => {
+    const chunks = [
+      'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1}}}\n\n',
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"kept"}}\n\n',
+      'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":4}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ];
+    let index = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[index++];
+        if (chunk) controller.enqueue(new TextEncoder().encode(chunk));
+      },
+    });
+    const { session } = await createSession({});
+    setReplayOwner(session, "admitted-detached");
+    setReplayFinalization(session);
+
+    const returned = await ProxyResponseHandler.dispatch(session, sseResponse(source));
+    const reader = returned.body?.getReader();
+    await reader?.read();
+    await reader?.cancel(new Error("client disconnected"));
+    await settleTasks();
+
+    expect(mocks.replayAbort).not.toHaveBeenCalled();
+    expect(mocks.replayComplete).toHaveBeenCalledWith(MESSAGE.id);
+    const replayedText = mocks.replayObserve.mock.calls
+      .map(([chunk]) => new TextDecoder().decode(chunk as Uint8Array))
+      .join("");
+    expect(replayedText).toContain('"text":"kept"');
+    expect(replayedText).toContain("message_stop");
+    expect(getDetachedStreamBudgetSnapshot().activeStreams).toBe(0);
+  });
+
+  it("persists OpenAI Chat Replay through the wire [DONE] marker", async () => {
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"kept"},"finish_reason":null}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":null}\n\n',
+      'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4}}\n\n',
+      "data: [DONE]\n\n",
+    ];
+    let index = 0;
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[index++];
+        if (chunk) controller.enqueue(new TextEncoder().encode(chunk));
+      },
+    });
+    const { session } = await createSession({});
+    session.setProvider({ ...createProvider(), providerType: "openai" });
+    session.originalFormat = "openai";
+    setReplayOwner(session, "openai-done");
+    setReplayFinalization(session);
+
+    const returned = await ProxyResponseHandler.dispatch(session, sseResponse(source));
+    const reader = returned.body?.getReader();
+    await reader?.read();
+    await reader?.cancel(new Error("client disconnected"));
+    await settleTasks();
+
+    const replayedText = mocks.replayObserve.mock.calls
+      .map(([chunk]) => new TextDecoder().decode(chunk as Uint8Array))
+      .join("");
+    expect(replayedText).toContain('"completion_tokens":4');
+    expect(replayedText).toContain("data: [DONE]");
+    expect(mocks.replayAbort).not.toHaveBeenCalled();
+    expect(mocks.replayComplete).toHaveBeenCalledWith(MESSAGE.id);
+  });
+
+  it("downgrades a detached Replay to metering when Replay headroom is exhausted", async () => {
+    const blocker = acquireDetachedStreamLease("replay", 20 * 1024 * 1024);
+    if (!blocker.acquired) throw new Error("expected Replay budget blocker");
+    try {
+      const chunks = [
+        'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":10,"output_tokens":1}}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"not replayed"}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":4}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ];
+      let index = 0;
+      const source = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks[index++];
+          if (chunk) controller.enqueue(new TextEncoder().encode(chunk));
+        },
+      });
+      const { session } = await createSession({});
+      setReplayOwner(session, "metering-fallback");
+      setReplayFinalization(session);
+
+      const returned = await ProxyResponseHandler.dispatch(session, sseResponse(source));
+      const reader = returned.body?.getReader();
+      await reader?.read();
+      const observedBeforeDetach = mocks.replayObserve.mock.calls.length;
+      await reader?.cancel(new Error("client disconnected"));
+      await settleTasks();
+
+      expect(mocks.replayAbort).toHaveBeenCalledWith("detached_replay_metering_reserve");
+      expect(mocks.replayObserve.mock.calls.length).toBe(observedBeforeDetach);
+      expect(mocks.durable).toHaveBeenCalledWith(
+        MESSAGE.id,
+        expect.objectContaining({ statusCode: 200, inputTokens: 10, outputTokens: 4 }),
+        expect.objectContaining({ onCommitted: expect.any(Function) })
+      );
+    } finally {
+      blocker.lease.release();
+    }
+    expect(getDetachedStreamBudgetSnapshot().activeStreams).toBe(0);
+  });
+
   it("caps a detached Replay drain at 60 seconds after the spool becomes inactive", async () => {
     vi.useFakeTimers();
     const previousReplayDetachedMs = process.env.REPLAY_MAX_DETACHED_MS;
@@ -324,10 +550,27 @@ describe("ProxyResponseHandler.dispatch stream terminal behavior", () => {
       await reader?.cancel(new Error("client disconnected"));
 
       expect(mocks.replayInactive).toEqual(expect.any(Function));
+      expect(getDetachedStreamBudgetSnapshot().activeByKind).toEqual({
+        loser: 0,
+        metering: 0,
+        replay: 1,
+      });
       await vi.advanceTimersByTimeAsync(59_999);
       expect(responseController.signal.aborted).toBe(false);
 
+      mocks.replayTerminalState = true;
       mocks.replayInactive?.();
+      expect(getDetachedStreamBudgetSnapshot().activeByKind).toEqual({
+        loser: 0,
+        metering: 1,
+        replay: 1,
+      });
+      mocks.replayTerminal?.();
+      expect(getDetachedStreamBudgetSnapshot().activeByKind).toEqual({
+        loser: 0,
+        metering: 1,
+        replay: 0,
+      });
       await vi.advanceTimersByTimeAsync(1);
 
       expect(responseController.signal.aborted).toBe(true);
@@ -336,6 +579,7 @@ describe("ProxyResponseHandler.dispatch stream terminal behavior", () => {
       );
       expect(cancelSource).toHaveBeenCalledOnce();
       await settleTasks();
+      expect(getDetachedStreamBudgetSnapshot().activeStreams).toBe(0);
     } finally {
       if (previousReplayDetachedMs === undefined) {
         delete process.env.REPLAY_MAX_DETACHED_MS;
@@ -485,6 +729,54 @@ describe("ProxyResponseHandler.dispatch stream terminal behavior", () => {
     expect(mocks.durable).toHaveBeenCalledWith(
       MESSAGE.id,
       expect.objectContaining({ statusCode: 502 }),
+      expect.objectContaining({ onCommitted: expect.any(Function) })
+    );
+  });
+
+  it("preserves Gemini UTF-8 characters split across network chunks during conversion", async () => {
+    const { session } = await createSession({});
+    session.setProvider({ ...createProvider(), providerType: "gemini" });
+    session.originalFormat = "claude";
+    const prefix = 'data: {"candidates":[{"content":{"parts":[{"text":"';
+    const suffix =
+      '"}]}}]}\n\ndata: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}\n\n';
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(`${prefix}你好\u{1F600}${suffix}`);
+    const splitAt = encoder.encode(`${prefix}你好`).byteLength + 2;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes.subarray(0, splitAt));
+        controller.enqueue(bytes.subarray(splitAt));
+        controller.close();
+      },
+    });
+
+    const returned = await ProxyResponseHandler.dispatch(session, sseResponse(source));
+    expect(await returned.text()).toContain("你好\u{1F600}");
+    await settleTasks();
+
+    expect(mocks.durable).toHaveBeenCalledWith(
+      MESSAGE.id,
+      expect.objectContaining({ statusCode: 200 }),
+      expect.objectContaining({ onCommitted: expect.any(Function) })
+    );
+  });
+
+  it("accepts a large Gemini chunk composed of complete short lines", async () => {
+    const { session } = await createSession({});
+    session.setProvider({ ...createProvider(), providerType: "gemini" });
+    session.originalFormat = "claude";
+    const frame = 'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}\n\n';
+    const body = `${frame.repeat(Math.ceil((1024 * 1024 + 1) / frame.length))}data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2}}\n\n`;
+
+    const returned = await ProxyResponseHandler.dispatch(session, sseResponse(body));
+    const returnedText = await returned.text();
+    expect(returnedText.length).toBeGreaterThan(1024 * 1024);
+    await settleTasks();
+
+    expect(mocks.durable).toHaveBeenCalledWith(
+      MESSAGE.id,
+      expect.objectContaining({ statusCode: 200 }),
       expect.objectContaining({ onCommitted: expect.any(Function) })
     );
   });

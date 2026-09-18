@@ -1,8 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveEndpointPolicy } from "@/app/v1/_lib/proxy/endpoint-policy";
 import {
+  acquireDetachedStreamLease,
+  getDetachedStreamBudgetSnapshot,
+} from "@/app/v1/_lib/proxy/detached-stream-budget";
+import {
   BoundedStreamTextAccumulator,
   ProxyResponseHandler,
+  resolveReplayDrainReservationBytes,
 } from "@/app/v1/_lib/proxy/response-handler";
 import { ProxySession } from "@/app/v1/_lib/proxy/session";
 import {
@@ -403,6 +408,76 @@ function createPullTrackedResponsesSse(): {
       headers: { "content-type": "text/event-stream" },
     }),
     getPullCount: () => pullCount,
+  };
+}
+
+function createMeteringTerminalResponsesSse(options: { includeUsage?: boolean } = {}): {
+  response: Response;
+  cancel: ReturnType<typeof vi.fn>;
+} {
+  const encoder = new TextEncoder();
+  const chunks = [
+    `event: response.output_text.delta\ndata: ${JSON.stringify({
+      type: "response.output_text.delta",
+      delta: "x".repeat(128 * 1024),
+    })}\n\n`,
+    `event: response.completed\ndata: ${JSON.stringify({
+      type: "response.completed",
+      response: {
+        id: "resp_metered",
+        model: "gpt-5.4-mini-2026-03-17",
+        ...(options.includeUsage === false
+          ? {}
+          : { usage: { input_tokens: 463, output_tokens: 11 } }),
+      },
+    })}\n\n`,
+  ];
+  let index = 0;
+  const cancel = vi.fn();
+  return {
+    response: new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks[index++];
+          if (chunk) controller.enqueue(encoder.encode(chunk));
+        },
+        cancel,
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }
+    ),
+    cancel,
+  };
+}
+
+function createMeteringErrorResponsesSse(): {
+  response: Response;
+  cancel: ReturnType<typeof vi.fn>;
+} {
+  const encoder = new TextEncoder();
+  const chunks = [
+    'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+    'event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed"}}\n\n',
+  ];
+  let index = 0;
+  const cancel = vi.fn();
+  return {
+    response: new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks[index++];
+          if (chunk) controller.enqueue(encoder.encode(chunk));
+        },
+        cancel,
+      }),
+      {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      }
+    ),
+    cancel,
   };
 }
 
@@ -1064,6 +1139,14 @@ describe("ProxyResponseHandler stream client abort finalization", () => {
         return true;
       }
     );
+  });
+
+  it("uses a conservative Replay reservation when environment parsing fails", () => {
+    expect(
+      resolveReplayDrainReservationBytes(() => {
+        throw new Error("invalid environment");
+      })
+    ).toBe(29 * 1024 * 1024);
   });
 
   it("propagates unexpected registered task rejections during drain", async () => {
@@ -1921,6 +2004,7 @@ describe("ProxyResponseHandler stream client abort finalization", () => {
     const controller = new AbortController();
     controller.abort();
     const session = createSession(controller.signal);
+    session.setHighConcurrencyModeEnabled(true);
     setDeferredStreamingFinalization(session, {
       providerId: 1,
       providerName: "avemujica-responses",
@@ -2113,6 +2197,183 @@ describe("ProxyResponseHandler stream client abort finalization", () => {
       }),
       expect.objectContaining({ onCommitted: expect.any(Function) })
     );
+  });
+
+  it("attributes an old no-first-byte client abort once", async () => {
+    vi.mocked(recordFailure).mockClear();
+    const clientController = new AbortController();
+    const session = createSession(clientController.signal);
+    setDeferredStreamingFinalization(session, {
+      providerId: 1,
+      providerName: "avemujica-responses",
+      providerPriority: 1,
+      attemptNumber: 1,
+      totalProvidersAttempted: 1,
+      isFirstAttempt: true,
+      isFailoverSuccess: false,
+      endpointId: 42,
+      endpointUrl: "https://api.test.invalid/v1",
+      upstreamStatusCode: 200,
+      healthAttemptId: "legacy-serial-1-1",
+      healthAttemptStartedAtMonotonic: performance.now() - 1_000,
+      healthAttributionThresholdMs: 1,
+      healthFirstByteSeen: false,
+    });
+    const upstream = createControllableEmptyResponsesSse();
+
+    await ProxyResponseHandler.dispatch(session, upstream.response);
+    clientController.abort(new Error("client detached"));
+    upstream.close();
+    await drainAsyncTasks();
+
+    expect(recordFailure).toHaveBeenCalledTimes(1);
+    expect(session.getProviderChain()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ reason: "client_abort_no_first_byte" })])
+    );
+  });
+
+  it("stops a detached source as soon as compact terminal usage is captured", async () => {
+    const clientController = new AbortController();
+    const session = createSession(clientController.signal);
+    setDeferredStreamingFinalization(session, {
+      providerId: 1,
+      providerName: "avemujica-responses",
+      providerPriority: 1,
+      attemptNumber: 1,
+      totalProvidersAttempted: 1,
+      isFirstAttempt: true,
+      isFailoverSuccess: false,
+      endpointId: 42,
+      endpointUrl: "https://api.test.invalid/v1",
+      upstreamStatusCode: 200,
+    });
+    const metered = createMeteringTerminalResponsesSse();
+
+    await ProxyResponseHandler.dispatch(session, metered.response);
+    clientController.abort(new Error("client detached"));
+    await drainAsyncTasks();
+
+    expect(metered.cancel).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "client_abort_metering_complete" })
+    );
+    expect(updateMessageRequestDetailsDurably).toHaveBeenCalledWith(
+      123,
+      expect.objectContaining({
+        statusCode: 200,
+        inputTokens: 463,
+        outputTokens: 11,
+      }),
+      expect.objectContaining({ onCommitted: expect.any(Function) })
+    );
+    expect(getDetachedStreamBudgetSnapshot().activeStreams).toBe(0);
+  });
+
+  it("stops a detached source at a valid terminal even when usage is absent", async () => {
+    const clientController = new AbortController();
+    const session = createSession(clientController.signal);
+    setDeferredStreamingFinalization(session, {
+      providerId: 1,
+      providerName: "avemujica-responses",
+      providerPriority: 1,
+      attemptNumber: 1,
+      totalProvidersAttempted: 1,
+      isFirstAttempt: true,
+      isFailoverSuccess: false,
+      endpointId: 42,
+      endpointUrl: "https://api.test.invalid/v1",
+      upstreamStatusCode: 200,
+    });
+    const metered = createMeteringTerminalResponsesSse({ includeUsage: false });
+
+    await ProxyResponseHandler.dispatch(session, metered.response);
+    clientController.abort(new Error("client detached"));
+    await drainAsyncTasks();
+
+    expect(metered.cancel).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "client_abort_metering_complete" })
+    );
+    expect(updateMessageRequestDetailsDurably).toHaveBeenCalledWith(
+      123,
+      expect.objectContaining({ statusCode: 200 }),
+      expect.objectContaining({ onCommitted: expect.any(Function) })
+    );
+    expect(getDetachedStreamBudgetSnapshot().activeStreams).toBe(0);
+  });
+
+  it("stops a detached source on an explicit protocol error and records upstream failure", async () => {
+    const clientController = new AbortController();
+    const session = createSession(clientController.signal);
+    setDeferredStreamingFinalization(session, {
+      providerId: 1,
+      providerName: "avemujica-responses",
+      providerPriority: 1,
+      attemptNumber: 1,
+      totalProvidersAttempted: 1,
+      isFirstAttempt: true,
+      isFailoverSuccess: false,
+      endpointId: 42,
+      endpointUrl: "https://api.test.invalid/v1",
+      upstreamStatusCode: 200,
+    });
+    const metered = createMeteringErrorResponsesSse();
+
+    await ProxyResponseHandler.dispatch(session, metered.response);
+    clientController.abort(new Error("client detached"));
+    await drainAsyncTasks();
+
+    expect(metered.cancel).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "client_abort_metering_complete" })
+    );
+    expect(updateMessageRequestDetailsDurably).toHaveBeenCalledWith(
+      123,
+      expect.objectContaining({
+        statusCode: 502,
+        errorMessage: expect.stringContaining("UPSTREAM_PROTOCOL_ERROR"),
+      }),
+      expect.objectContaining({ onCommitted: expect.any(Function) })
+    );
+    expect(getDetachedStreamBudgetSnapshot().activeStreams).toBe(0);
+  });
+
+  it("rejects a new detached drain immediately when the process budget is exhausted", async () => {
+    const budget = getDetachedStreamBudgetSnapshot();
+    const reservation = acquireDetachedStreamLease("metering", budget.limits.maxReservedBytes);
+    if (!reservation.acquired) throw new Error("expected test budget reservation");
+    const clientController = new AbortController();
+    const upstreamController = new AbortController();
+    try {
+      const session = createSession(clientController.signal);
+      Object.assign(session, { responseController: upstreamController });
+      setDeferredStreamingFinalization(session, {
+        providerId: 1,
+        providerName: "avemujica-responses",
+        providerPriority: 1,
+        attemptNumber: 1,
+        totalProvidersAttempted: 1,
+        isFirstAttempt: true,
+        isFailoverSuccess: false,
+        endpointId: 42,
+        endpointUrl: "https://api.test.invalid/v1",
+        upstreamStatusCode: 200,
+      });
+
+      await ProxyResponseHandler.dispatch(
+        session,
+        createHangingResponsesSse(upstreamController.signal)
+      );
+      clientController.abort(new Error("client detached"));
+      await drainAsyncTasks();
+
+      expect(upstreamController.signal.aborted).toBe(true);
+      expect(updateMessageRequestDetailsDurably).toHaveBeenCalledWith(
+        123,
+        expect.objectContaining({ statusCode: 499, errorMessage: "CLIENT_ABORTED" }),
+        expect.objectContaining({ onCommitted: expect.any(Function) })
+      );
+    } finally {
+      reservation.lease.release();
+    }
+    expect(getDetachedStreamBudgetSnapshot().activeStreams).toBe(0);
   });
 
   it.each([
