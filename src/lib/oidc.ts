@@ -86,16 +86,39 @@ export function getOidcConfig(): OidcConfig | null {
   };
 }
 
-// Per-host callback selection: a host is allowed only when its callback URL is configured,
-// so the Authorization Code flow keeps state cookies and session cookies on the same origin.
-export function resolveOidcRedirectUri(config: OidcConfig, requestUrl: string): string | null {
-  let host: string;
+// The reverse proxy terminates TLS and forwards to the app's internal address, so
+// request.url carries the container host instead of the public one. X-Forwarded-Host
+// is the only record of the origin the browser actually used. Spoofing it can only
+// select another already-registered callback, which a caller cannot complete without
+// that host's state cookies, so it stays bounded by the allowlist.
+export function resolveRequestHost(
+  headers: { get(name: string): string | null },
+  requestUrl: string
+): string | null {
+  const forwarded = headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  if (forwarded) return forwarded;
+  const host = headers.get("host")?.trim();
+  if (host) return host;
   try {
-    host = new URL(requestUrl).host;
+    return new URL(requestUrl).host;
   } catch {
     return null;
   }
-  return config.allowedRedirectUris.find((uri) => new URL(uri).host === host) ?? null;
+}
+
+// Per-host callback selection: a host is allowed only when its callback URL is
+// configured, so the Authorization Code flow keeps state cookies and session cookies
+// on the same origin. Callers fall back to the canonical redirect URI when no entry
+// matches, leaving single-domain deployments unaffected.
+export function resolveOidcRedirectUri(
+  config: OidcConfig,
+  requestHost: string | null | undefined
+): string | null {
+  const host = requestHost?.trim().toLowerCase();
+  if (!host) return null;
+  return (
+    config.allowedRedirectUris.find((uri) => new URL(uri).host.toLowerCase() === host) ?? null
+  );
 }
 
 async function loadDiscovery(config: OidcConfig): Promise<OidcDiscovery> {

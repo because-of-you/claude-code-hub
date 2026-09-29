@@ -13,6 +13,7 @@ import {
   OIDC_STATE_COOKIE,
   OIDC_VERIFIER_COOKIE,
   resolveOidcRedirectUri,
+  resolveRequestHost,
 } from "@/lib/oidc";
 import { constantTimeEqual } from "@/lib/security/constant-time-compare";
 import { createAuditLogAsync } from "@/repository/audit-log";
@@ -30,7 +31,10 @@ function loginErrorRedirect(request: NextRequest, code: string): NextResponse {
   let redirectUri: string | undefined;
   try {
     const config = getOidcConfig();
-    redirectUri = (config && resolveOidcRedirectUri(config, request.url)) || config?.redirectUri;
+    redirectUri =
+      (config &&
+        resolveOidcRedirectUri(config, resolveRequestHost(request.headers, request.url))) ||
+      config?.redirectUri;
   } catch {
     redirectUri = undefined;
   }
@@ -68,8 +72,9 @@ export async function GET(request: NextRequest) {
     const config = getOidcConfig();
     if (!config) return loginErrorRedirect(request, "disabled");
 
-    const redirectUri = resolveOidcRedirectUri(config, request.url);
-    if (!redirectUri) return loginErrorRedirect(request, "origin_not_allowed");
+    const redirectUri =
+      resolveOidcRedirectUri(config, resolveRequestHost(request.headers, request.url)) ??
+      config.redirectUri;
 
     const identity = await exchangeOidcCode({
       config,

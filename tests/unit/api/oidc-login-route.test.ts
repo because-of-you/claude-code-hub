@@ -35,6 +35,7 @@ vi.mock("@/lib/oidc", () => ({
   isSafeInternalRedirect: (value: unknown) =>
     typeof value === "string" && value.startsWith("/") && !value.startsWith("//"),
   resolveOidcRedirectUri: resolveOidcRedirectUriMock,
+  resolveRequestHost: () => "hub.example.com",
   OIDC_NONCE_COOKIE: "cch-oidc-nonce",
   OIDC_RETURN_COOKIE: "cch-oidc-return",
   OIDC_STATE_COOKIE: "cch-oidc-state",
@@ -73,17 +74,20 @@ describe("OIDC login route", () => {
     expect(await response.json()).toEqual({ errorCode: "OIDC_DISABLED" });
   });
 
-  it("rejects hosts without a registered callback URL", async () => {
+  it("falls back to the configured callback for an unrecognized host", async () => {
     resolveOidcRedirectUriMock.mockReturnValue(null);
     const { NextRequest } = await import("next/server");
     const { GET } = await import("@/app/api/auth/oidc/login/route");
     const response = await GET(
-      new NextRequest("https://evil.example.com/api/auth/oidc/login?from=/dashboard")
+      new NextRequest("https://hub.example.com/api/auth/oidc/login?from=/dashboard")
     );
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ errorCode: "OIDC_REDIRECT_URI_NOT_ALLOWED" });
-    expect(createOidcAuthorizationUrlMock).not.toHaveBeenCalled();
-    expect(cookieSetMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(307);
+    expect(createOidcAuthorizationUrlMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        redirectUri: "https://hub.example.com/api/auth/oidc/callback",
+      })
+    );
+    expect(cookieSetMock).toHaveBeenCalled();
   });
 
   it("starts PKCE login with the callback URL of the request host", async () => {

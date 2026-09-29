@@ -12,6 +12,7 @@ import {
   OIDC_STATE_COOKIE,
   OIDC_VERIFIER_COOKIE,
   resolveOidcRedirectUri,
+  resolveRequestHost,
 } from "@/lib/oidc";
 import { withAuthResponseHeaders } from "@/lib/security/auth-response-headers";
 
@@ -25,12 +26,9 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const redirectUri = resolveOidcRedirectUri(config, request.url);
-  if (!redirectUri) {
-    return withAuthResponseHeaders(
-      NextResponse.json({ errorCode: "OIDC_REDIRECT_URI_NOT_ALLOWED" }, { status: 400 })
-    );
-  }
+  const redirectUri =
+    resolveOidcRedirectUri(config, resolveRequestHost(request.headers, request.url)) ??
+    config.redirectUri;
 
   const state = createRandomBase64Url();
   const nonce = createRandomBase64Url();

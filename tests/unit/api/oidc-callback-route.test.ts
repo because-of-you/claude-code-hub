@@ -42,6 +42,7 @@ vi.mock("@/lib/oidc", () => ({
   isSafeInternalRedirect: (value: unknown) =>
     typeof value === "string" && value.startsWith("/") && !value.startsWith("//"),
   resolveOidcRedirectUri: resolveOidcRedirectUriMock,
+  resolveRequestHost: () => "hub.example.com",
   OIDC_NONCE_COOKIE: "cch-oidc-nonce",
   OIDC_RETURN_COOKIE: "cch-oidc-return",
   OIDC_STATE_COOKIE: "cch-oidc-state",
@@ -91,18 +92,20 @@ describe("OIDC callback route", () => {
     expect(exchangeOidcCodeMock).not.toHaveBeenCalled();
   });
 
-  it("rejects a callback host that is not allowlisted", async () => {
+  it("falls back to the configured callback when the host is not allowlisted", async () => {
     resolveOidcRedirectUriMock.mockReturnValue(null);
     const { NextRequest } = await import("next/server");
     const { GET } = await import("@/app/api/auth/oidc/callback/route");
     const response = await GET(
       new NextRequest(
-        "https://evil.example.com/api/auth/oidc/callback?state=expected-state&code=code"
+        "https://hub.example.com/api/auth/oidc/callback?state=expected-state&code=code"
       )
     );
-    expect(response.headers.get("location")).toContain("oidc_error=origin_not_allowed");
-    expect(exchangeOidcCodeMock).not.toHaveBeenCalled();
-    expect(sessionCreateMock).not.toHaveBeenCalled();
+    expect(exchangeOidcCodeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ redirectUri: "https://hub.example.com/api/auth/oidc/callback" })
+    );
+    expect(sessionCreateMock).toHaveBeenCalled();
+    expect(response.headers.get("location")).toBe("https://hub.example.com/dashboard");
   });
 
   it("denies identities outside the required group", async () => {

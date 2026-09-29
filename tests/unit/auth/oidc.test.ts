@@ -71,17 +71,45 @@ describe("OIDC helpers", () => {
     });
     const { getOidcConfig, resolveOidcRedirectUri } = await import("@/lib/oidc");
     const config = getOidcConfig()!;
-    expect(
-      resolveOidcRedirectUri(config, "https://hub.example.com/api/auth/oidc/callback?code=x")
-    ).toBe("https://hub.example.com/api/auth/oidc/callback");
-    expect(
-      resolveOidcRedirectUri(config, "https://inner.hub.example.com/api/auth/oidc/login")
-    ).toBe("https://inner.hub.example.com/api/auth/oidc/callback");
-    expect(resolveOidcRedirectUri(config, "http://0.0.0.0:3000/api/auth/oidc/login")).toBe(null);
-    expect(resolveOidcRedirectUri(config, "https://evil.example.com/api/auth/oidc/callback")).toBe(
-      null
+    expect(resolveOidcRedirectUri(config, "hub.example.com")).toBe(
+      "https://hub.example.com/api/auth/oidc/callback"
     );
-    expect(resolveOidcRedirectUri(config, "not-a-url")).toBe(null);
+    expect(resolveOidcRedirectUri(config, "inner.hub.example.com")).toBe(
+      "https://inner.hub.example.com/api/auth/oidc/callback"
+    );
+    expect(resolveOidcRedirectUri(config, "HUB.example.com")).toBe(
+      "https://hub.example.com/api/auth/oidc/callback"
+    );
+    expect(resolveOidcRedirectUri(config, "0.0.0.0:3000")).toBe(null);
+    expect(resolveOidcRedirectUri(config, "evil.example.com")).toBe(null);
+    expect(resolveOidcRedirectUri(config, null)).toBe(null);
+    expect(resolveOidcRedirectUri(config, "   ")).toBe(null);
+  });
+
+  it("prefers the proxy forwarded host over the container address", async () => {
+    const { resolveRequestHost } = await import("@/lib/oidc");
+    const headers = (map: Record<string, string>) => ({
+      get: (name: string) => map[name] ?? null,
+    });
+    expect(
+      resolveRequestHost(
+        headers({ "x-forwarded-host": "hub.example.com" }),
+        "http://0.0.0.0:3000/api/auth/oidc/login"
+      )
+    ).toBe("hub.example.com");
+    expect(
+      resolveRequestHost(
+        headers({ "x-forwarded-host": "a.example.com, b.example.com" }),
+        "http://0.0.0.0:3000/x"
+      )
+    ).toBe("a.example.com");
+    expect(resolveRequestHost(headers({ host: "hub.example.com" }), "http://0.0.0.0:3000/x")).toBe(
+      "hub.example.com"
+    );
+    expect(resolveRequestHost(headers({}), "https://fallback.example.com/x")).toBe(
+      "fallback.example.com"
+    );
+    expect(resolveRequestHost(headers({}), "not-a-url")).toBe(null);
   });
 
   it("normalizes issuer and creates an authorization request with PKCE", async () => {
