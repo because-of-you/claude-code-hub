@@ -71,9 +71,9 @@ describe("OIDC helpers", () => {
     });
     const { getOidcConfig, resolveOidcRedirectUri } = await import("@/lib/oidc");
     const config = getOidcConfig()!;
-    expect(resolveOidcRedirectUri(config, "https://hub.example.com/api/auth/oidc/callback?code=x")).toBe(
-      "https://hub.example.com/api/auth/oidc/callback"
-    );
+    expect(
+      resolveOidcRedirectUri(config, "https://hub.example.com/api/auth/oidc/callback?code=x")
+    ).toBe("https://hub.example.com/api/auth/oidc/callback");
     expect(
       resolveOidcRedirectUri(config, "https://inner.hub.example.com/api/auth/oidc/login")
     ).toBe("https://inner.hub.example.com/api/auth/oidc/callback");

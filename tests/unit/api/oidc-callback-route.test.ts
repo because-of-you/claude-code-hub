@@ -158,7 +158,9 @@ describe("OIDC callback route", () => {
   });
 
   it("keeps the inner domain as the post-login origin", async () => {
-    resolveOidcRedirectUriMock.mockReturnValue("https://inner.hub.example.com/api/auth/oidc/callback");
+    resolveOidcRedirectUriMock.mockReturnValue(
+      "https://inner.hub.example.com/api/auth/oidc/callback"
+    );
     const { NextRequest } = await import("next/server");
     const { GET } = await import("@/app/api/auth/oidc/callback/route");
     const response = await GET(

@@ -105,12 +105,12 @@ describe("OIDC login route", () => {
         codeChallenge: "code-challenge",
       })
     );
-    expect(cookieSetMock).toHaveBeenCalledWith("cch-oidc-state", "random-value", expect.any(Object));
     expect(cookieSetMock).toHaveBeenCalledWith(
-      "cch-oidc-return",
-      "/dashboard",
+      "cch-oidc-state",
+      "random-value",
       expect.any(Object)
     );
+    expect(cookieSetMock).toHaveBeenCalledWith("cch-oidc-return", "/dashboard", expect.any(Object));
   });
 
   it("stores a sanitized return path", async () => {
@@ -122,10 +122,6 @@ describe("OIDC login route", () => {
           encodeURIComponent("//attacker.example/steal")
       )
     );
-    expect(cookieSetMock).toHaveBeenCalledWith(
-      "cch-oidc-return",
-      "/dashboard",
-      expect.any(Object)
-    );
+    expect(cookieSetMock).toHaveBeenCalledWith("cch-oidc-return", "/dashboard", expect.any(Object));
   });
 });
