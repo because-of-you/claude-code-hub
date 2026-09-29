@@ -116,9 +116,7 @@ export function resolveOidcRedirectUri(
 ): string | null {
   const host = requestHost?.trim().toLowerCase();
   if (!host) return null;
-  return (
-    config.allowedRedirectUris.find((uri) => new URL(uri).host.toLowerCase() === host) ?? null
-  );
+  return config.allowedRedirectUris.find((uri) => new URL(uri).host.toLowerCase() === host) ?? null;
 }
 
 async function loadDiscovery(config: OidcConfig): Promise<OidcDiscovery> {
