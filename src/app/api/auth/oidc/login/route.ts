@@ -11,6 +11,7 @@ import {
   OIDC_RETURN_COOKIE,
   OIDC_STATE_COOKIE,
   OIDC_VERIFIER_COOKIE,
+  resolveOidcRedirectUri,
 } from "@/lib/oidc";
 import { withAuthResponseHeaders } from "@/lib/security/auth-response-headers";
 
@@ -21,6 +22,13 @@ export async function GET(request: NextRequest) {
   if (!config) {
     return withAuthResponseHeaders(
       NextResponse.json({ errorCode: "OIDC_DISABLED" }, { status: 404 })
+    );
+  }
+
+  const redirectUri = resolveOidcRedirectUri(config, request.url);
+  if (!redirectUri) {
+    return withAuthResponseHeaders(
+      NextResponse.json({ errorCode: "OIDC_REDIRECT_URI_NOT_ALLOWED" }, { status: 400 })
     );
   }
 
@@ -48,6 +56,7 @@ export async function GET(request: NextRequest) {
 
   const authorizationUrl = await createOidcAuthorizationUrl({
     config,
+    redirectUri,
     state,
     nonce,
     codeChallenge,

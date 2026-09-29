@@ -19,6 +19,7 @@ const enabledConfig = {
   OIDC_CLIENT_ID: "cch-client",
   OIDC_CLIENT_SECRET: "client-secret",
   OIDC_REDIRECT_URI: "https://hub.example.com/api/auth/oidc/callback",
+  OIDC_REDIRECT_URI_ALLOWLIST: undefined as string | undefined,
   OIDC_REQUIRED_GROUP: "lldap_admin",
 };
 
@@ -41,6 +42,48 @@ describe("OIDC helpers", () => {
     expect(() => getOidcConfig()).toThrow("OIDC is enabled");
   });
 
+  it("collects canonical and extra redirect URIs", async () => {
+    getEnvConfigMock.mockReturnValue({
+      ...enabledConfig,
+      OIDC_REDIRECT_URI_ALLOWLIST:
+        "https://inner.hub.example.com/api/auth/oidc/callback, https://hub.example.com/api/auth/oidc/callback , ",
+    });
+    const { getOidcConfig } = await import("@/lib/oidc");
+    expect(getOidcConfig()?.allowedRedirectUris).toEqual([
+      "https://hub.example.com/api/auth/oidc/callback",
+      "https://inner.hub.example.com/api/auth/oidc/callback",
+    ]);
+  });
+
+  it("rejects malformed allowlist entries", async () => {
+    getEnvConfigMock.mockReturnValue({
+      ...enabledConfig,
+      OIDC_REDIRECT_URI_ALLOWLIST: "not-a-url",
+    });
+    const { getOidcConfig } = await import("@/lib/oidc");
+    expect(() => getOidcConfig()).toThrow("OIDC redirect URI is not a valid URL");
+  });
+
+  it("resolves the callback URL by request host", async () => {
+    getEnvConfigMock.mockReturnValue({
+      ...enabledConfig,
+      OIDC_REDIRECT_URI_ALLOWLIST: "https://inner.hub.example.com/api/auth/oidc/callback",
+    });
+    const { getOidcConfig, resolveOidcRedirectUri } = await import("@/lib/oidc");
+    const config = getOidcConfig()!;
+    expect(resolveOidcRedirectUri(config, "https://hub.example.com/api/auth/oidc/callback?code=x")).toBe(
+      "https://hub.example.com/api/auth/oidc/callback"
+    );
+    expect(
+      resolveOidcRedirectUri(config, "https://inner.hub.example.com/api/auth/oidc/login")
+    ).toBe("https://inner.hub.example.com/api/auth/oidc/callback");
+    expect(resolveOidcRedirectUri(config, "http://0.0.0.0:3000/api/auth/oidc/login")).toBe(null);
+    expect(resolveOidcRedirectUri(config, "https://evil.example.com/api/auth/oidc/callback")).toBe(
+      null
+    );
+    expect(resolveOidcRedirectUri(config, "not-a-url")).toBe(null);
+  });
+
   it("normalizes issuer and creates an authorization request with PKCE", async () => {
     vi.stubGlobal(
       "fetch",
@@ -58,11 +101,15 @@ describe("OIDC helpers", () => {
     expect(config?.issuer).toBe("https://auth.example.com");
     const url = await createOidcAuthorizationUrl({
       config: config!,
+      redirectUri: "https://hub.example.com/api/auth/oidc/callback",
       state: "state-value",
       nonce: "nonce-value",
       codeChallenge: "challenge-value",
     });
     expect(url.origin + url.pathname).toBe("https://auth.example.com/api/oidc/authorization");
+    expect(url.searchParams.get("redirect_uri")).toBe(
+      "https://hub.example.com/api/auth/oidc/callback"
+    );
     expect(url.searchParams.get("scope")).toBe("openid profile email groups");
     expect(url.searchParams.get("state")).toBe("state-value");
     expect(url.searchParams.get("nonce")).toBe("nonce-value");
@@ -94,6 +141,7 @@ describe("OIDC helpers", () => {
     const { exchangeOidcCode, getOidcConfig } = await import("@/lib/oidc");
     const identity = await exchangeOidcCode({
       config: getOidcConfig()!,
+      redirectUri: "https://hub.example.com/api/auth/oidc/callback",
       code: "authorization-code",
       codeVerifier: "verifier",
       nonce: "expected-nonce",
@@ -114,6 +162,9 @@ describe("OIDC helpers", () => {
     expect(tokenRequest?.[1]?.headers).toMatchObject({
       Authorization: `Basic ${Buffer.from("cch-client:client-secret").toString("base64")}`,
     });
+    expect(tokenRequest?.[1]?.body?.toString()).toContain(
+      "redirect_uri=https%3A%2F%2Fhub.example.com%2Fapi%2Fauth%2Foidc%2Fcallback"
+    );
   });
 
   it("rejects a mismatched nonce", async () => {
@@ -136,6 +187,7 @@ describe("OIDC helpers", () => {
     await expect(
       exchangeOidcCode({
         config: getOidcConfig()!,
+        redirectUri: "https://hub.example.com/api/auth/oidc/callback",
         code: "code",
         codeVerifier: "verifier",
         nonce: "expected",

@@ -127,6 +127,11 @@ export const EnvSchema = z.object({
     (val) => (typeof val === "string" && val.trim() ? val.trim() : undefined),
     z.string().url("OIDC_REDIRECT_URI must be a valid URL")
   ),
+  // 逗号分隔的额外回调 URL（须与 OIDC_REDIRECT_URI 同路径，且在 IdP 侧一并注册）
+  OIDC_REDIRECT_URI_ALLOWLIST: optionalPreprocessed(
+    (val) => (typeof val === "string" && val.trim() ? val.trim() : undefined),
+    z.string().min(1, "OIDC_REDIRECT_URI_ALLOWLIST cannot be empty")
+  ),
   OIDC_REQUIRED_GROUP: z.string().trim().min(1).default("lldap_admin"),
   CSRF_SECRET: optionalPreprocessed(
     (val) => {

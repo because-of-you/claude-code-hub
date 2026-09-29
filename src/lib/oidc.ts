@@ -8,6 +8,7 @@ export interface OidcConfig {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
+  allowedRedirectUris: string[];
   requiredGroup: string;
 }
 
@@ -60,13 +61,41 @@ export function getOidcConfig(): OidcConfig | null {
     );
   }
 
+  const allowedRedirectUris = [
+    env.OIDC_REDIRECT_URI,
+    ...(env.OIDC_REDIRECT_URI_ALLOWLIST || "")
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean),
+  ];
+  for (const uri of allowedRedirectUris) {
+    try {
+      new URL(uri);
+    } catch {
+      throw new Error(`OIDC redirect URI is not a valid URL: ${uri}`);
+    }
+  }
+
   return {
     issuer: normalizeIssuer(env.OIDC_ISSUER_URL),
     clientId: env.OIDC_CLIENT_ID,
     clientSecret: env.OIDC_CLIENT_SECRET,
     redirectUri: env.OIDC_REDIRECT_URI,
+    allowedRedirectUris: Array.from(new Set(allowedRedirectUris)),
     requiredGroup: env.OIDC_REQUIRED_GROUP,
   };
+}
+
+// Per-host callback selection: a host is allowed only when its callback URL is configured,
+// so the Authorization Code flow keeps state cookies and session cookies on the same origin.
+export function resolveOidcRedirectUri(config: OidcConfig, requestUrl: string): string | null {
+  let host: string;
+  try {
+    host = new URL(requestUrl).host;
+  } catch {
+    return null;
+  }
+  return config.allowedRedirectUris.find((uri) => new URL(uri).host === host) ?? null;
 }
 
 async function loadDiscovery(config: OidcConfig): Promise<OidcDiscovery> {
@@ -117,6 +146,7 @@ export async function createPkceChallenge(verifier: string): Promise<string> {
 
 export async function createOidcAuthorizationUrl(options: {
   config: OidcConfig;
+  redirectUri: string;
   state: string;
   nonce: string;
   codeChallenge: string;
@@ -124,7 +154,7 @@ export async function createOidcAuthorizationUrl(options: {
   const discovery = await loadDiscovery(options.config);
   const url = new URL(discovery.authorization_endpoint);
   url.searchParams.set("client_id", options.config.clientId);
-  url.searchParams.set("redirect_uri", options.config.redirectUri);
+  url.searchParams.set("redirect_uri", options.redirectUri);
   url.searchParams.set("response_type", "code");
   url.searchParams.set("scope", "openid profile email groups");
   url.searchParams.set("state", options.state);
@@ -148,6 +178,7 @@ function getDisplayName(payload: JWTPayload): string {
 
 export async function exchangeOidcCode(options: {
   config: OidcConfig;
+  redirectUri: string;
   code: string;
   codeVerifier: string;
   nonce: string;
@@ -160,7 +191,7 @@ export async function exchangeOidcCode(options: {
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code: options.code,
-    redirect_uri: options.config.redirectUri,
+    redirect_uri: options.redirectUri,
     client_id: options.config.clientId,
     code_verifier: options.codeVerifier,
   });

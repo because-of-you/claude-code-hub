@@ -6,6 +6,7 @@ const {
   cookieGetMock,
   exchangeOidcCodeMock,
   getOidcConfigMock,
+  resolveOidcRedirectUriMock,
   sessionCreateMock,
   setAuthCookieMock,
 } = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ const {
   cookieGetMock: vi.fn(),
   exchangeOidcCodeMock: vi.fn(),
   getOidcConfigMock: vi.fn(),
+  resolveOidcRedirectUriMock: vi.fn(),
   sessionCreateMock: vi.fn(),
   setAuthCookieMock: vi.fn(),
 }));
@@ -39,6 +41,7 @@ vi.mock("@/lib/oidc", () => ({
   getOidcConfig: getOidcConfigMock,
   isSafeInternalRedirect: (value: unknown) =>
     typeof value === "string" && value.startsWith("/") && !value.startsWith("//"),
+  resolveOidcRedirectUri: resolveOidcRedirectUriMock,
   OIDC_NONCE_COOKIE: "cch-oidc-nonce",
   OIDC_RETURN_COOKIE: "cch-oidc-return",
   OIDC_STATE_COOKIE: "cch-oidc-state",
@@ -64,8 +67,10 @@ describe("OIDC callback route", () => {
       clientId: "cch",
       clientSecret: "secret",
       redirectUri: "https://hub.example.com/api/auth/oidc/callback",
+      allowedRedirectUris: ["https://hub.example.com/api/auth/oidc/callback"],
       requiredGroup: "lldap_admin",
     });
+    resolveOidcRedirectUriMock.mockReturnValue("https://hub.example.com/api/auth/oidc/callback");
     exchangeOidcCodeMock.mockResolvedValue({
       issuer: "https://auth.example.com",
       subject: "subject-1",
@@ -84,6 +89,20 @@ describe("OIDC callback route", () => {
     expect(response.status).toBe(307);
     expect(response.headers.get("location")).toContain("oidc_error=invalid_callback");
     expect(exchangeOidcCodeMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a callback host that is not allowlisted", async () => {
+    resolveOidcRedirectUriMock.mockReturnValue(null);
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import("@/app/api/auth/oidc/callback/route");
+    const response = await GET(
+      new NextRequest(
+        "https://evil.example.com/api/auth/oidc/callback?state=expected-state&code=code"
+      )
+    );
+    expect(response.headers.get("location")).toContain("oidc_error=origin_not_allowed");
+    expect(exchangeOidcCodeMock).not.toHaveBeenCalled();
+    expect(sessionCreateMock).not.toHaveBeenCalled();
   });
 
   it("denies identities outside the required group", async () => {
@@ -125,10 +144,33 @@ describe("OIDC callback route", () => {
       3600
     );
     expect(setAuthCookieMock).toHaveBeenCalledWith("sid_oidc");
+    expect(exchangeOidcCodeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        redirectUri: "https://hub.example.com/api/auth/oidc/callback",
+        code: "code",
+      })
+    );
     expect(response.headers.get("location")).toBe("https://hub.example.com/dashboard");
     expect(auditMock).toHaveBeenCalledWith(
       expect.objectContaining({ success: true, operatorKeyName: "Authelia OIDC" })
     );
     expect(cookieDeleteMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps the inner domain as the post-login origin", async () => {
+    resolveOidcRedirectUriMock.mockReturnValue("https://inner.hub.example.com/api/auth/oidc/callback");
+    const { NextRequest } = await import("next/server");
+    const { GET } = await import("@/app/api/auth/oidc/callback/route");
+    const response = await GET(
+      new NextRequest(
+        "https://inner.hub.example.com/api/auth/oidc/callback?state=expected-state&code=code"
+      )
+    );
+    expect(exchangeOidcCodeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        redirectUri: "https://inner.hub.example.com/api/auth/oidc/callback",
+      })
+    );
+    expect(response.headers.get("location")).toBe("https://inner.hub.example.com/dashboard");
   });
 });

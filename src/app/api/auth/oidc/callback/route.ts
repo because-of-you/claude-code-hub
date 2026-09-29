@@ -12,6 +12,7 @@ import {
   OIDC_RETURN_COOKIE,
   OIDC_STATE_COOKIE,
   OIDC_VERIFIER_COOKIE,
+  resolveOidcRedirectUri,
 } from "@/lib/oidc";
 import { constantTimeEqual } from "@/lib/security/constant-time-compare";
 import { createAuditLogAsync } from "@/repository/audit-log";
@@ -26,8 +27,15 @@ const TRANSIENT_COOKIES = [
 ];
 
 function loginErrorRedirect(request: NextRequest, code: string): NextResponse {
+  let redirectUri: string | undefined;
+  try {
+    const config = getOidcConfig();
+    redirectUri = (config && resolveOidcRedirectUri(config, request.url)) || config?.redirectUri;
+  } catch {
+    redirectUri = undefined;
+  }
   const url = createOidcApplicationUrl("/login", {
-    redirectUri: getOidcConfig()?.redirectUri,
+    redirectUri,
     requestUrl: request.url,
   });
   url.searchParams.set("oidc_error", code);
@@ -60,7 +68,16 @@ export async function GET(request: NextRequest) {
     const config = getOidcConfig();
     if (!config) return loginErrorRedirect(request, "disabled");
 
-    const identity = await exchangeOidcCode({ config, code, codeVerifier: verifier, nonce });
+    const redirectUri = resolveOidcRedirectUri(config, request.url);
+    if (!redirectUri) return loginErrorRedirect(request, "origin_not_allowed");
+
+    const identity = await exchangeOidcCode({
+      config,
+      redirectUri,
+      code,
+      codeVerifier: verifier,
+      nonce,
+    });
     if (!identity.groups.includes(config.requiredGroup)) {
       createAuditLogAsync({
         actionCategory: "auth",
@@ -105,7 +122,7 @@ export async function GET(request: NextRequest) {
     const redirectPath = isSafeInternalRedirect(returnTo) ? returnTo : "/dashboard";
     return NextResponse.redirect(
       createOidcApplicationUrl(redirectPath, {
-        redirectUri: config.redirectUri,
+        redirectUri,
         requestUrl: request.url,
       })
     );
