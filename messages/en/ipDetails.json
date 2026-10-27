@@ -53,7 +53,8 @@
     "zoomOut": "Zoom out",
     "locate": "Find my location",
     "fullscreen": "Toggle fullscreen",
-    "resetBearing": "Reset bearing to north"
+    "resetBearing": "Reset bearing to north",
+    "error": "The map could not be loaded."
   },
   "fields": {
     "country": "Country",

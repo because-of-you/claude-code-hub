@@ -28,8 +28,9 @@ function isValidCspReportUri(uri: string): boolean {
 
 const DEFAULT_CSP_VALUE =
   "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' " +
-  "'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self' data:; " +
-  "frame-ancestors 'none'";
+  "'unsafe-inline'; img-src 'self' data: blob: https://webst01.is.autonavi.com; " +
+  "connect-src 'self' https://webst01.is.autonavi.com; font-src 'self' data:; " +
+  "worker-src 'self' blob:; frame-ancestors 'none'";
 
 export function buildSecurityHeaders(
   config?: Partial<SecurityHeadersConfig>

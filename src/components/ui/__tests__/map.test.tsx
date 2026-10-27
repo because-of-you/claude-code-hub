@@ -482,6 +482,9 @@ describe("Map UI", () => {
 
     const map = maplibreMocks.maps.at(-1);
     expect(map).toBeTruthy();
+    expect(map?.style).toMatchObject({
+      sources: { amap: { type: "raster" } },
+    });
 
     const zoomInButton = container.querySelector(
       `[aria-label="${labels.zoomIn}"]`

@@ -53,7 +53,8 @@
     "zoomOut": "縮小地圖",
     "locate": "定位到我的位置",
     "fullscreen": "切換全螢幕地圖",
-    "resetBearing": "將朝向重設為正北"
+    "resetBearing": "將朝向重設為正北",
+    "error": "地圖載入失敗。"
   },
   "fields": {
     "country": "國家/地區",

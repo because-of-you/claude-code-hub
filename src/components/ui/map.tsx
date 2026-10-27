@@ -22,10 +22,20 @@ import { createPortal } from "react-dom";
 
 import { cn } from "@/lib/utils/index";
 
-const defaultStyles = {
-  dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-  light: "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
-};
+const defaultStyle = {
+  version: 8,
+  sources: {
+    amap: {
+      type: "raster",
+      tiles: ["https://webst01.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}"],
+      tileSize: 256,
+      attribution: "© 高德地图",
+    },
+  },
+  layers: [{ id: "amap", type: "raster", source: "amap" }],
+} satisfies MapLibreGL.StyleSpecification;
+
+const defaultStyles = { dark: defaultStyle, light: defaultStyle };
 
 const defaultMarkerOffset: NonNullable<MarkerOptions["offset"]> = [0, 0];
 const defaultProjection: MapLibreGL.ProjectionSpecification = { type: "mercator" };
@@ -151,6 +161,8 @@ type MapProps = {
   onViewportChange?: (viewport: MapViewport) => void;
   /** Show a loading indicator on the map */
   loading?: boolean;
+  /** Content shown when the map style fails to load. */
+  errorMessage?: ReactNode;
 } & Omit<MapLibreGL.MapOptions, "container" | "style">;
 
 function DefaultLoader() {
@@ -193,6 +205,7 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
     viewport,
     onViewportChange,
     loading = false,
+    errorMessage,
     ...props
   },
   ref
@@ -202,6 +215,7 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
   const [mapInstance, setMapInstance] = useState<MapLibreGL.Map | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isStyleLoaded, setIsStyleLoaded] = useState(false);
+  const [hasMapError, setHasMapError] = useState(false);
   const currentStyleRef = useRef<MapStyleOption | null>(null);
   const internalUpdateRef = useRef(false);
   const resolvedTheme = useResolvedTheme(themeProp);
@@ -252,6 +266,9 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
     });
 
     const loadHandler = () => setIsLoaded(true);
+    const errorHandler = () => {
+      if (!map.isStyleLoaded()) setHasMapError(true);
+    };
     const syncStyleReady = () => {
       if (!map.isStyleLoaded()) return;
       setIsStyleLoaded(true);
@@ -266,6 +283,7 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
     };
 
     map.on("load", loadHandler);
+    map.on("error", errorHandler);
     map.on("idle", idleHandler);
     map.on("styledata", styleDataHandler);
     map.on("move", handleMove);
@@ -278,12 +296,14 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
     return () => {
       window.cancelAnimationFrame(resizeFrame);
       map.off("load", loadHandler);
+      map.off("error", errorHandler);
       map.off("idle", idleHandler);
       map.off("styledata", styleDataHandler);
       map.off("move", handleMove);
       map.remove();
       setIsLoaded(false);
       setIsStyleLoaded(false);
+      setHasMapError(false);
       setMapInstance(null);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -327,6 +347,7 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
 
     currentStyleRef.current = newStyle;
     setIsStyleLoaded(false);
+    setHasMapError(false);
 
     mapInstance.setStyle(newStyle, { diff: true });
   }, [mapInstance, resolvedTheme, mapStyles]);
@@ -348,7 +369,13 @@ const Map = forwardRef<MapRef, MapProps>(function Map(
   return (
     <MapContext.Provider value={contextValue}>
       <div ref={containerRef} className={cn("relative h-full w-full", className)}>
-        {(!isLoaded || loading) && <DefaultLoader />}
+        {hasMapError ? (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/90 p-4 text-center text-sm text-muted-foreground">
+            {errorMessage}
+          </div>
+        ) : (
+          (!isLoaded || loading) && <DefaultLoader />
+        )}
         {/* SSR-safe: children render only when map is loaded on client */}
         {mapInstance && children}
       </div>

@@ -53,7 +53,8 @@
     "zoomOut": "地図を縮小",
     "locate": "現在地を表示",
     "fullscreen": "全画面地図に切り替え",
-    "resetBearing": "方位を北向きに戻す"
+    "resetBearing": "方位を北向きに戻す",
+    "error": "地図を読み込めませんでした。"
   },
   "fields": {
     "country": "国 / 地域",

@@ -45,6 +45,7 @@ export function LocationMapCard({
             center: [longitude, latitude],
             zoom: resolveZoom(accuracyRadiusKm),
           }}
+          errorMessage={t("map.error")}
         >
           <MapPopup longitude={longitude} latitude={latitude} className="w-56">
             <div className="space-y-1">
