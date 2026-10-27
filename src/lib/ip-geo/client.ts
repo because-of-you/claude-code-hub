@@ -93,13 +93,219 @@ function isValidLookupResult(data: unknown): data is IpGeoLookupResult {
   return true;
 }
 
+interface IpSbLookupPayload {
+  ip?: unknown;
+  country_code?: unknown;
+  country?: unknown;
+  continent_code?: unknown;
+  region?: unknown;
+  city?: unknown;
+  latitude?: unknown;
+  longitude?: unknown;
+  timezone?: unknown;
+  offset?: unknown;
+  organization?: unknown;
+  isp?: unknown;
+  asn_organization?: unknown;
+  asn?: unknown;
+}
+
+const CONTINENT_NAMES: Record<string, string> = {
+  AF: "Africa",
+  AN: "Antarctica",
+  AS: "Asia",
+  EU: "Europe",
+  NA: "North America",
+  OC: "Oceania",
+  SA: "South America",
+};
+
+function countryFlagEmoji(countryCode: string): string {
+  if (!/^[A-Z]{2}$/.test(countryCode) || countryCode === "ZZ") {
+    return "\u{1f1ff}\u{1f1ff}";
+  }
+  return String.fromCodePoint(
+    ...countryCode.split("").map((letter) => 0x1f1e6 + letter.charCodeAt(0) - 65)
+  );
+}
+
+function formatUtcOffset(offset: unknown): string {
+  if (typeof offset !== "number" || !Number.isFinite(offset)) return "+00:00";
+  const sign = offset < 0 ? "-" : "+";
+  const absolute = Math.abs(Math.trunc(offset));
+  const hours = String(Math.floor(absolute / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor((absolute % 3600) / 60)).padStart(2, "0");
+  return `${sign}${hours}:${minutes}`;
+}
+
+function normalizeIpSbResult(ip: string, payload: unknown): IpGeoLookupResult | null {
+  if (!payload || typeof payload !== "object") return null;
+  const data = payload as IpSbLookupPayload;
+  const countryCode =
+    typeof data.country_code === "string" && /^[A-Za-z]{2}$/.test(data.country_code)
+      ? data.country_code.toUpperCase()
+      : "ZZ";
+  const countryName =
+    typeof data.country === "string" && data.country.trim() ? data.country : "Unknown";
+  const continentCode =
+    typeof data.continent_code === "string" && data.continent_code.trim()
+      ? data.continent_code.toUpperCase()
+      : "ZZ";
+  const organization =
+    [data.asn_organization, data.organization, data.isp].find(
+      (value): value is string => typeof value === "string" && value.trim().length > 0
+    ) ?? null;
+  const asn = typeof data.asn === "number" && Number.isFinite(data.asn) ? data.asn : null;
+  const timezone =
+    typeof data.timezone === "string" && data.timezone.trim() ? data.timezone : "UTC";
+  const latitude =
+    typeof data.latitude === "number" && Number.isFinite(data.latitude) ? data.latitude : 0;
+  const longitude =
+    typeof data.longitude === "number" && Number.isFinite(data.longitude) ? data.longitude : 0;
+  const region = typeof data.region === "string" && data.region.trim() ? data.region : null;
+  const city = typeof data.city === "string" && data.city.trim() ? data.city : null;
+
+  return {
+    ip,
+    version: isIP(ip) === 6 ? "ipv6" : "ipv4",
+    hostname: null,
+    location: {
+      continent: { code: continentCode, name: CONTINENT_NAMES[continentCode] ?? "Unknown" },
+      country: {
+        code: countryCode,
+        code3: "",
+        name: countryName,
+        name_native: countryName,
+        capital: null,
+        calling_code: "",
+        tld: "",
+        area_km2: 0,
+        population: 0,
+        borders: [],
+        is_eu_member: false,
+        flag: {
+          emoji: countryFlagEmoji(countryCode),
+          unicode: "",
+          svg: null,
+          png: null,
+        },
+        languages: [],
+        currencies: [],
+      },
+      region: region ? { code: "", name: region, type: "region" } : null,
+      city,
+      postal_code: null,
+      coordinates: { latitude, longitude, accuracy_radius_km: null },
+    },
+    timezone: {
+      id: timezone,
+      name: timezone,
+      abbreviation: timezone.split("/").at(-1) ?? timezone,
+      utc_offset: formatUtcOffset(data.offset),
+      utc_offset_seconds:
+        typeof data.offset === "number" && Number.isFinite(data.offset) ? data.offset : 0,
+      is_dst: false,
+      current_time: new Date().toISOString(),
+    },
+    connection: {
+      asn,
+      handle: null,
+      organization,
+      domain: null,
+      route: null,
+      rir: "UNKNOWN",
+      type: "unknown",
+      subtype: null,
+      scope: "public",
+      is_anycast: false,
+    },
+    company: { name: organization, domain: null, type: "unknown" },
+    carrier: null,
+    hosting: null,
+    privacy: {
+      is_proxy: false,
+      is_vpn: false,
+      is_tor: false,
+      is_tor_exit: false,
+      is_relay: false,
+      is_anonymous: false,
+    },
+    threat: {
+      is_abuser: false,
+      is_attacker: false,
+      is_crawler: false,
+      is_threat: false,
+      score: 0,
+      risk_level: "none",
+      blocklists: [],
+    },
+    abuse: null,
+  };
+}
+
+function isIpSbApi(base: string): boolean {
+  try {
+    const hostname = new URL(base).hostname.toLowerCase();
+    return hostname === "ip.sb" || hostname.endsWith(".ip.sb");
+  } catch {
+    return false;
+  }
+}
+
+async function fetchFromIpSb(
+  base: string,
+  ip: string,
+  timeoutMs: number
+): Promise<IpGeoLookupResult | { error: string }> {
+  const url = `${base.replace(/\/+$/, "")}/geoip/${encodeURIComponent(ip)}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+    const responseText = await response.text();
+    if (!response.ok) return { error: `fallback upstream status ${response.status}` };
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(responseText);
+    } catch {
+      return { error: "fallback upstream invalid json" };
+    }
+
+    const result = normalizeIpSbResult(ip, payload);
+    return result ? result : { error: "fallback upstream returned unexpected shape" };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchFromUpstream(
   ip: string,
   lang: string
 ): Promise<IpGeoLookupResult | { error: string }> {
   const env = getEnvConfig();
   const base = env.IP_GEO_API_URL.replace(/\/+$/, "");
+
+  if (isIpSbApi(base)) {
+    return fetchFromIpSb(base, ip, env.IP_GEO_TIMEOUT_MS);
+  }
+
   const url = `${base}/v1/ip2location/${encodeURIComponent(ip)}?lang=${encodeURIComponent(lang)}`;
+
+  const fallback = async (): Promise<IpGeoLookupResult | { error: string }> => {
+    const result = await fetchFromIpSb(env.IP_GEO_FALLBACK_API_URL, ip, env.IP_GEO_TIMEOUT_MS);
+    if (!("error" in result)) {
+      logger.warn("[IpGeo] using fallback provider", { ip, lang });
+    }
+    return result;
+  };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), env.IP_GEO_TIMEOUT_MS);
@@ -124,7 +330,9 @@ async function fetchFromUpstream(
         status: response.status,
         bodySnippet: responseText.slice(0, 300),
       });
-      return { error: `upstream status ${response.status}` };
+      const fallbackResult = await fallback();
+      if (!("error" in fallbackResult)) return fallbackResult;
+      return { error: `upstream status ${response.status}; ${fallbackResult.error}` };
     }
 
     let data: IpGeoLookupResult;
@@ -138,7 +346,9 @@ async function fetchFromUpstream(
         error: error instanceof Error ? error.message : String(error),
         bodySnippet: responseText.slice(0, 300),
       });
-      return { error: "upstream invalid json" };
+      const fallbackResult = await fallback();
+      if (!("error" in fallbackResult)) return fallbackResult;
+      return { error: `upstream invalid json; ${fallbackResult.error}` };
     }
 
     // Validate the UI-critical subtree before we cache this for an hour.
@@ -151,7 +361,9 @@ async function fetchFromUpstream(
         url,
         bodySnippet: responseText.slice(0, 300),
       });
-      return { error: "upstream returned unexpected shape" };
+      const fallbackResult = await fallback();
+      if (!("error" in fallbackResult)) return fallbackResult;
+      return { error: `upstream returned unexpected shape; ${fallbackResult.error}` };
     }
     return data;
   } catch (error) {
@@ -161,8 +373,10 @@ async function fetchFromUpstream(
       url,
       error: error instanceof Error ? error.message : String(error),
     });
+    const fallbackResult = await fallback();
+    if (!("error" in fallbackResult)) return fallbackResult;
     return {
-      error: error instanceof Error ? error.message : String(error),
+      error: `${error instanceof Error ? error.message : String(error)}; ${fallbackResult.error}`,
     };
   } finally {
     clearTimeout(timer);

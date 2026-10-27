@@ -121,6 +121,7 @@ vi.mock("@/lib/config/env.schema", async (importOriginal) => {
     getEnvConfig: () => ({
       ...actual.getEnvConfig(),
       IP_GEO_API_URL: "https://ip.api.example.com",
+      IP_GEO_FALLBACK_API_URL: "https://api.ip.sb",
       IP_GEO_API_TOKEN: "test-token",
       IP_GEO_CACHE_TTL_SECONDS: 3600,
       IP_GEO_TIMEOUT_MS: 1500,
@@ -194,7 +195,47 @@ describe("lookupIp — degradation", () => {
 
     const second = await lookupIp("2.2.2.2");
     expect(second.status).toBe("error");
-    expect(fetchMock).toHaveBeenCalledTimes(1); // negative cached
+    expect(fetchMock).toHaveBeenCalledTimes(2); // primary + fallback, then negative cached
+  });
+
+  test("falls back to ip.sb and normalizes its flat response", async () => {
+    fetchMock
+      .mockResolvedValueOnce(new Response("origin unavailable", { status: 530 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            ip: "8.8.8.8",
+            country_code: "US",
+            country: "United States",
+            continent_code: "NA",
+            region: "California",
+            city: "Mountain View",
+            latitude: 37.751,
+            longitude: -97.822,
+            timezone: "America/Chicago",
+            offset: -21600,
+            organization: "Google",
+            asn_organization: "Google LLC",
+            asn: 15169,
+          }),
+          { status: 200 }
+        )
+      );
+
+    const { lookupIp } = await import("./client");
+    const result = await lookupIp("8.8.8.8");
+
+    expect(result.status).toBe("ok");
+    if (result.status === "ok") {
+      expect(result.data.location.country.code).toBe("US");
+      expect(result.data.connection.asn).toBe(15169);
+      expect(result.data.connection.organization).toBe("Google LLC");
+    }
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.ip.sb/geoip/8.8.8.8",
+      expect.anything()
+    );
   });
 
   test("network error returns error", async () => {
