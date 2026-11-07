@@ -161,8 +161,7 @@ describe("OIDC helpers", () => {
       payload: {
         sub: "user-subject",
         nonce: "expected-nonce",
-        preferred_username: "wechat-stable-id",
-        name: "微信昵称",
+        preferred_username: "wfy",
         groups: ["lldap_admin", "developers", 123],
       },
     });
@@ -179,7 +178,7 @@ describe("OIDC helpers", () => {
     expect(identity).toEqual({
       issuer: "https://auth.example.com",
       subject: "user-subject",
-      displayName: "微信昵称",
+      displayName: "wfy",
       groups: ["lldap_admin", "developers"],
     });
     expect(jwtVerifyMock).toHaveBeenCalledWith(
