@@ -191,7 +191,7 @@ function getDisplayName(payload: JWTPayload): string {
     name?: unknown;
     email?: unknown;
   };
-  for (const value of [claims.preferred_username, claims.name, claims.email]) {
+  for (const value of [claims.name, claims.preferred_username, claims.email]) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return payload.sub || "OIDC administrator";
