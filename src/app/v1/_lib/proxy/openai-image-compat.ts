@@ -167,7 +167,13 @@ function success(): OpenAIImageValidationResult {
 }
 
 function isGptImageModel(model: string): boolean {
+  model = imageModelName(model);
   return GENERATION_GPT_MODELS.has(model) || EDIT_GPT_MODELS.has(model);
+}
+
+// Provider namespaces affect routing, not the underlying image model's validation rules.
+function imageModelName(model: string): string {
+  return model.slice(model.lastIndexOf("/") + 1);
 }
 
 function getKnownModelFamily(
@@ -277,7 +283,7 @@ function validateGenerationsRequest(body: Record<string, unknown>): OpenAIImageV
   }
 
   const model = parseString(body.model);
-  if (model === "gpt-image-2") {
+  if (model && imageModelName(model) === "gpt-image-2") {
     return success();
   }
 
@@ -505,7 +511,7 @@ function validateEditsJsonRequest(body: Record<string, unknown>): OpenAIImageVal
     if (!maskResult.ok) return maskResult;
   }
 
-  if (model === "gpt-image-2") {
+  if (model && imageModelName(model) === "gpt-image-2") {
     return success();
   }
 
@@ -700,7 +706,7 @@ async function validateEditsMultipartRequest(
     return fail("Invalid request: multipart /images/edits accepts at most one mask field.");
   }
 
-  if (model === "gpt-image-2") {
+  if (model && imageModelName(model) === "gpt-image-2") {
     return success();
   }
 

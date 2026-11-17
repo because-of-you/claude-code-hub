@@ -171,9 +171,59 @@ describe("openai-image-compat - generations constraints", () => {
 
     expect(result.ok).toBe(true);
   });
+
+  it.each(["codex/gpt-image-2", "remote/codex/gpt-image-2"])(
+    "accepts a namespaced GPT Image 2 generation without changing its model",
+    async (model) => {
+      const body = { model, prompt: "otter", background: "opaque", size: "1024x1536" };
+      const result = await validateOpenAIImageRequest({ pathname: "/v1/images/generations", body });
+      expect(result.ok).toBe(true);
+      expect(body.model).toBe(model);
+    }
+  );
+
+  it("applies GPT Image 1 validation to namespaced models", async () => {
+    const result = await validateOpenAIImageRequest({
+      pathname: "/v1/images/generations",
+      body: { model: "relay/gpt-image-1.5", prompt: "otter", response_format: "url" },
+    });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("response_format");
+  });
 });
 
 describe("openai-image-compat - edits constraints", () => {
+  it("accepts namespaced GPT Image 2 JSON edits", async () => {
+    const body = {
+      model: "codex/gpt-image-2",
+      prompt: "edit this",
+      images: [{ file_id: "file-1" }],
+      moderation: "auto",
+    };
+    const result = await validateOpenAIImageRequest({ pathname: "/v1/images/edits", body });
+    expect(result.ok).toBe(true);
+    expect(body.model).toBe("codex/gpt-image-2");
+  });
+
+  it("accepts namespaced GPT Image 2 multipart edits", async () => {
+    const metadata = await createMultipartMetadata({
+      pathname: "/v1/images/edits",
+      fields: [
+        ["model", "codex/gpt-image-2"],
+        ["prompt", "edit this"],
+        ["moderation", "auto"],
+      ],
+      files: [["image[]", createPngFile("source.png", 32, 32)]],
+    });
+    const result = await validateOpenAIImageRequest({
+      pathname: "/v1/images/edits",
+      body: {},
+      imageRequestMetadata: metadata,
+    });
+    expect(result.ok).toBe(true);
+    expect(metadata.model).toBe("codex/gpt-image-2");
+  });
+
   it("rejects edit requests without images", async () => {
     const result = await validateOpenAIImageRequest({
       pathname: "/v1/images/edits",
