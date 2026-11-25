@@ -7,6 +7,7 @@ import { buildPublicSessionIdentity, buildScopeTag } from "@/lib/request-identit
 import { headersToSanitizedObject, SessionManager } from "@/lib/session-manager";
 import { SessionTracker } from "@/lib/session-tracker";
 import { completeCodexSessionIdentifiers } from "../codex/session-completer";
+import { getResponsesWsSessionId, isWebsocketClientRequest } from "../responses-ws/eligibility";
 import { getAffinityStore } from "./affinity/affinity-store";
 import {
   computeFingerprintChain,
@@ -115,12 +116,20 @@ export class ProxySessionGuard {
       const requestMessage = session.request.message as Record<string, unknown>;
       const isCodexRequest = Array.isArray(requestMessage.input);
 
-      if (!allowRawSessionContext && codexCompletionEnabled && isCodexRequest) {
+      const wsSessionId = isWebsocketClientRequest(session.headers)
+        ? getResponsesWsSessionId(session.headers)
+        : null;
+      if (
+        !allowRawSessionContext &&
+        codexCompletionEnabled &&
+        (wsSessionId !== null || isCodexRequest)
+      ) {
         const completion = await completeCodexSessionIdentifiers({
           keyId,
           headers: session.headers,
           requestBody: requestMessage,
           userAgent: session.userAgent,
+          wsSessionId,
         });
 
         if (completion.applied && completion.action !== "none") {

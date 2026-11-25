@@ -15,6 +15,7 @@ export type CodexSessionCompletionSource =
   | "header_session_id"
   | "header_x_session_id"
   | "body_prompt_cache_key"
+  | "websocket_session"
   | "fingerprint_cache"
   | "generated_uuid_v7";
 
@@ -30,6 +31,7 @@ type CompleteArgs = {
   headers: Headers;
   requestBody: Record<string, unknown>;
   userAgent: string | null;
+  wsSessionId?: string | null;
 };
 
 function getSessionTtlSeconds(): number {
@@ -219,6 +221,7 @@ export async function completeCodexSessionIdentifiers(
   const headerSessionId = normalizeCodexSessionId(args.headers.get("session_id"));
   const headerXSessionId = normalizeCodexSessionId(args.headers.get("x-session-id"));
   const bodyPromptCacheKey = normalizeCodexSessionId(args.requestBody.prompt_cache_key);
+  const wsSessionId = normalizeCodexSessionId(args.wsSessionId);
 
   const missingHeader = !headerSessionId && !headerXSessionId;
   const missingBody = !bodyPromptCacheKey;
@@ -230,7 +233,9 @@ export async function completeCodexSessionIdentifiers(
         ? { sessionId: headerXSessionId, source: "header_x_session_id" }
         : bodyPromptCacheKey
           ? { sessionId: bodyPromptCacheKey, source: "body_prompt_cache_key" }
-          : null;
+          : wsSessionId
+            ? { sessionId: wsSessionId, source: "websocket_session" }
+            : null;
 
   // Both required fields present: keep as-is (idempotent)
   // Note: x-session-id is treated as a compatibility header and does not satisfy the requirement

@@ -143,6 +143,33 @@ describe("categorizeErrorAsync - upstream HTTP status precedence", () => {
     expect(await categorizeErrorAsync(error)).toBe(ErrorCategory.NON_RETRYABLE_CLIENT_ERROR);
   });
 
+  it.each([
+    { status: undefined, errorType: undefined },
+    { status: 400, errorType: "invalid_request_error" },
+  ])(
+    "stops retries when a Responses stream reports a missing previous response (%j)",
+    async ({ status, errorType }) => {
+      const error = new StreamPrecommitError("gate_error", {
+        family: "openai-responses",
+        providerId: 1,
+        providerName: "test-provider",
+        frameData: JSON.stringify({
+          type: "error",
+          status,
+          error: {
+            type: errorType,
+            code: "previous_response_not_found",
+            param: "previous_response_id",
+            message: "Previous response with id 'resp_missing' not found.",
+          },
+        }),
+      });
+
+      expect(error.statusCode).toBe(400);
+      expect(await categorizeErrorAsync(error)).toBe(ErrorCategory.NON_RETRYABLE_CLIENT_ERROR);
+    }
+  );
+
   it("should keep upstream 404 model errors as NON_RETRYABLE_CLIENT_ERROR", async () => {
     const error = new ProxyError("Provider returned 404: model not found", 404, {
       body: JSON.stringify({

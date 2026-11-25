@@ -222,6 +222,7 @@ export type CodexSessionIdCompletionSpecialSetting = {
     | "header_x_session_id"
     | "body_prompt_cache_key"
     | "body_metadata_session_id"
+    | "websocket_session"
     | "fingerprint_cache"
     | "generated_uuid_v7";
   sessionId: string;

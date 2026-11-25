@@ -194,6 +194,7 @@ const STRUCTURED_BAD_REQUEST_CODES = new Set([
   "invalid_prompt",
   "invalid_value",
   "message_too_big",
+  "previous_response_not_found",
   "string_above_max_length",
   "unsupported_value",
 ]);

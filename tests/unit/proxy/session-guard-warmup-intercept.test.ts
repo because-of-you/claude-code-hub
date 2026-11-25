@@ -1,6 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 import { resolveEndpointPolicy } from "@/app/v1/_lib/proxy/endpoint-policy";
 import type { ProxySession } from "@/app/v1/_lib/proxy/session";
+import {
+  INTERNAL_SECRET_HEADER,
+  RESPONSES_WS_SESSION_HEADER,
+  WS_FORWARD_FLAG_HEADER,
+} from "@/app/v1/_lib/responses-ws/internal-secret";
 
 const getCachedSystemSettingsMock = vi.fn();
 
@@ -152,6 +158,45 @@ beforeEach(() => {
     enableClaudeMetadataUserIdInjection: true,
     affinityIgnoreClientSessionId: false,
   });
+});
+
+test("keeps the upstream session identity stable across Responses WebSocket frames", async () => {
+  const ProxySessionGuard = await loadGuard();
+  const internalSecret = randomUUID();
+  const websocketSessionId = randomUUID();
+  const explicitCacheKey = randomUUID();
+  vi.stubEnv("CCH_RESPONSES_WS_INTERNAL_SECRET", internalSecret);
+  try {
+    const frames = [
+      { input: "First turn" },
+      { input: [{ role: "user", content: "Next turn" }], previous_response_id: "resp_first" },
+      { input: "Another chain", prompt_cache_key: explicitCacheKey },
+      { input: "Ordinary HTTP request" },
+    ];
+    for (const [index, frame] of frames.entries()) {
+      const message = { model: "gpt-5.5", ...frame };
+      const headers = new Headers({
+        "x-cch-client-transport": "websocket",
+        [WS_FORWARD_FLAG_HEADER]: "1",
+        [RESPONSES_WS_SESSION_HEADER]: websocketSessionId,
+      });
+      if (index < 3) headers.set(INTERNAL_SECRET_HEADER, internalSecret);
+      const session = createMockSession({
+        headers,
+        getEndpointPolicy: () => resolveEndpointPolicy("/v1/responses"),
+      });
+      session.request.message = message;
+
+      await ProxySessionGuard.ensure(session);
+
+      const expectedId = [websocketSessionId, websocketSessionId, explicitCacheKey, null][index];
+      expect(headers.get("session_id")).toBe(expectedId);
+      expect(headers.get("x-session-id")).toBe(expectedId);
+      expect(session.request.message.prompt_cache_key).toBe(expectedId ?? undefined);
+    }
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
 
 describe("ProxySessionGuard：warmup 拦截不应计入并发会话", () => {

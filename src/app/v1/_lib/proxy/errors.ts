@@ -580,6 +580,34 @@ function extractErrorContentForDetection(error: Error): string {
 const PROVIDER_LOCAL_MODEL_UNAVAILABLE_MARKER =
   "not supported by any configured account in this group";
 
+export const PREVIOUS_RESPONSE_NOT_FOUND = "previous_response_not_found";
+
+export function isPreviousResponseNotFoundError(error: unknown): error is ProxyError {
+  if (!(error instanceof ProxyError) || (error.statusCode !== 400 && error.statusCode !== 404)) {
+    return false;
+  }
+
+  const upstream = error.upstreamError;
+  if (!upstream) return false;
+
+  try {
+    const payload = (upstream.parsed ?? JSON.parse(upstream.body)) as {
+      type?: unknown;
+      code?: unknown;
+      error?: { code?: unknown };
+      response?: { error?: { code?: unknown } };
+    } | null;
+    return (
+      payload?.error?.code === PREVIOUS_RESPONSE_NOT_FOUND ||
+      (payload?.type === "error" && payload.code === PREVIOUS_RESPONSE_NOT_FOUND) ||
+      (payload?.type === "response.failed" &&
+        payload.response?.error?.code === PREVIOUS_RESPONSE_NOT_FOUND)
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** A model capability gap local to one upstream account pool, not to the request. */
 export function isProviderLocalModelUnavailableError(error: unknown): error is ProxyError {
   if (
@@ -1032,6 +1060,10 @@ export async function categorizeErrorAsync(error: Error): Promise<ErrorCategory>
   // such as "invalid request" in the same response body.
   if (isRetryableUpstreamStorageCapacityError(error)) {
     return ErrorCategory.PROVIDER_ERROR;
+  }
+
+  if (isPreviousResponseNotFoundError(error)) {
+    return ErrorCategory.NON_RETRYABLE_CLIENT_ERROR;
   }
 
   // 优先级 5: 不可重试的客户端输入错误检测（白名单模式）

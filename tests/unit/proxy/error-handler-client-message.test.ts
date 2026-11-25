@@ -7,6 +7,7 @@ import {
 } from "@/app/v1/_lib/proxy/error-handler";
 import { ProxyError } from "@/app/v1/_lib/proxy/errors";
 import { ProxySession } from "@/app/v1/_lib/proxy/session";
+import { StreamPrecommitError } from "@/app/v1/_lib/proxy/stream-gate/stream-content-gate";
 import { DbPoolAdmissionError } from "@/drizzle/admitted-client";
 import type { ErrorDetectionResult } from "@/lib/error-rule-detector";
 
@@ -186,6 +187,37 @@ describe("ProxyErrorHandler.handle client message", () => {
     expect(responseText).not.toContain("https://");
     expect(responseText).not.toContain("req_abc123");
     expect(responseText).not.toContain("provider-a");
+  });
+
+  test("preserves the recovery code for a missing previous response", async () => {
+    const session = await createSession();
+    const error = new StreamPrecommitError("gate_error", {
+      family: "openai-responses",
+      providerId: 1,
+      providerName: "test-provider",
+      frameData: JSON.stringify({
+        type: "error",
+        status: 400,
+        error: {
+          type: "invalid_request_error",
+          code: "previous_response_not_found",
+          param: "previous_response_id",
+          message: "Previous response with id 'resp_private' not found.",
+        },
+      }),
+    });
+
+    const response = await ProxyErrorHandler.handle(session, error);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({
+      error: {
+        type: "invalid_request_error",
+        code: "previous_response_not_found",
+        param: "previous_response_id",
+        message: expect.not.stringContaining("resp_private"),
+      },
+    });
   });
 
   test("returns a fixed 503 without exposing an admission query or parameters", async () => {

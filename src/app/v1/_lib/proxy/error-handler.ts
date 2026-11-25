@@ -21,7 +21,9 @@ import {
   ALL_PROVIDERS_UNAVAILABLE_MESSAGE,
   getErrorOverrideAsync,
   isEmptyResponseError,
+  isPreviousResponseNotFoundError,
   isRateLimitError,
+  PREVIOUS_RESPONSE_NOT_FOUND,
   ProxyError,
   type RateLimitError,
 } from "./errors";
@@ -517,6 +519,24 @@ export class ProxyErrorHandler {
       statusCode,
       overridden: false,
     });
+
+    if (isPreviousResponseNotFoundError(error)) {
+      return await finalizeErrorResponse(
+        Response.json(
+          {
+            error: {
+              type: "invalid_request_error",
+              code: PREVIOUS_RESPONSE_NOT_FOUND,
+              param: "previous_response_id",
+              message:
+                "Previous response not found. Resend the full input without previous_response_id.",
+            },
+          },
+          { status: statusCode }
+        ),
+        logErrorMessage
+      );
+    }
 
     // verboseProviderError（系统设置）开启时：对“假 200/空响应”等上游异常返回更详细的报告，便于排查。
     // 注意：
